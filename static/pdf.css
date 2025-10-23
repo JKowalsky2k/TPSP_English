@@ -1,0 +1,36 @@
+table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 8px;
+}
+
+th,
+td {
+    border: 1px solid #000;
+    padding: 2px;
+    text-align: center;
+    word-wrap: break-word;
+}
+
+thead th {
+    background-color: #d9d9d9;
+    font-weight: 700;
+}
+
+.rank-highlight td {
+    background-color: inherit;
+    color: #000;
+}
+
+.rank-highlight.rank-1 td {
+    font-weight: 700;
+}
+
+.rank-highlight.rank-2 td {
+    font-weight: 600;
+}
+
+.rank-highlight.rank-3 td {
+    font-weight: 500;
+}

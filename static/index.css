@@ -1,0 +1,30 @@
+/* Dodatkowe odstępy między kolumnami */
+.col-gap-left { padding-left: 2rem !important; }
+.col-gap-right { padding-right: 2rem !important; }
+
+/* Kolorowanie wierszy grup */
+.group-even { background-color: #f2f2f2; }
+.group-odd { background-color: #f9f4ef; }
+
+/* Pogrubienie nazwiska */
+.lastname { font-weight: bold; }
+
+/* Wyniki maksymalne (25 pkt) – nadrzędny selektor, wyższa specyficzność */
+td.max-score {
+    color: rgb(255, 41, 41);
+    font-weight: bold;
+}
+
+/* Podświetlenie wiersza przy hover */
+.table-hover tbody tr:hover {
+    background-color: #fff59d !important; /* jasny żółty */
+}
+
+tbody tr:hover td {
+    background-color: #ffa0a0 !important; /* jasny żółty */
+}
+
+/* Podświetlenie komórki w trakcie edycji */
+td[contenteditable]:focus {
+    outline: 2px solid #fd5a5a; /* żółta obwódka */
+}

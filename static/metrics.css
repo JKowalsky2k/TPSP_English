@@ -1,0 +1,86 @@
+body {
+    font-family: "DejaVu Sans", sans-serif;
+    font-size: 10px;
+    margin: 0;
+    padding: 0;
+}
+
+.metric-page {
+    page-break-after: always;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.metric-page:last-of-type {
+    page-break-after: auto;
+}
+
+.metric-header {
+    border: 1px solid #000;
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    text-transform: uppercase;
+}
+
+.metric-header__group {
+    font-weight: bold;
+    white-space: nowrap;
+}
+
+.metric-header__title {
+    font-weight: bold;
+    font-size: 12px;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.metric-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.metric-table th,
+.metric-table td {
+    border: 1px solid #000;
+    padding: 3px;
+    text-align: center;
+    min-width: 18px;
+    height: 18px;
+}
+
+.metric-table th.start-number,
+.metric-table td.start-number {
+    width: 55px;
+}
+
+.metric-table th.name-cell,
+.metric-table td.name-cell {
+    text-align: left;
+    padding-left: 6px;
+    width: 180px;
+}
+
+.metric-table th.results-header {
+    font-size: 11px;
+}
+
+.metric-table th.series-cell {
+    font-size: 9px;
+}
+
+.series-group-start {
+    border-left: 3px solid #000 !important;
+}
+
+.series-group-end {
+    border-right: 3px solid #000 !important;
+}
+
+.metric-table td.signature-row {
+    height: 28px;
+    text-align: left;
+    padding-left: 10px;
+}

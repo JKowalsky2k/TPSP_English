@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>Podgląd tabeli (Live)</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="{{ url_for('static', filename='live.css') }}" rel="stylesheet">
+</head>
+<body class="p-4 live-page" style="--column-count: {{ columns|length }};">
+
+<h1 class="mb-4">📊 Podgląd tabeli (Live)</h1>
+
+<div class="d-flex flex-wrap align-items-center gap-2 mb-4">
+  <button type="button" class="btn btn-primary active" data-mode="standard">
+    Tryb standardowy
+  </button>
+  <button type="button" class="btn btn-outline-dark" data-mode="category">
+    Kategorie A→Z, wynik malejąco
+  </button>
+</div>
+
+<div id="standard-view">
+  <h4>Top 6 zawodników</h4>
+  <table class="table table-bordered align-middle text-center live-table">
+    <thead>
+      <tr>
+        {% for col in columns %}
+          <th>{{ col.label }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody id="top-body">
+      <!-- pierwsze 6 zawodników -->
+    </tbody>
+  </table>
+
+  <h4>Pozostali zawodnicy</h4>
+  <div class="table-container" id="scroll-container">
+    <table class="table table-bordered align-middle text-center live-table">
+      <thead>
+        <tr>
+          {% for col in columns %}
+            <th>{{ col.label }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody id="scroll-body">
+        <!-- reszta zawodników -->
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div id="category-view" class="d-none">
+  <h4>Wszyscy zawodnicy — kategorie A→Z (wynik malejąco)</h4>
+  <div class="table-container" id="category-container">
+    <table class="table table-bordered align-middle text-center live-table">
+      <thead>
+        <tr>
+          {% for col in columns %}
+            <th>{{ col.label }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody id="category-body">
+        <!-- wszyscy zawodnicy -->
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const topBody = document.getElementById("top-body");
+const scrollBody = document.getElementById("scroll-body");
+const scrollContainer = document.getElementById("scroll-container");
+const categoryBody = document.getElementById("category-body");
+const categoryContainer = document.getElementById("category-container");
+const standardView = document.getElementById("standard-view");
+const categoryView = document.getElementById("category-view");
+const modeButtons = document.querySelectorAll("[data-mode]");
+
+let tableData = [];
+let scrollPosStandard = 0;
+let scrollPosCategory = 0;
+const scrollSpeed = 0.5; // px/frame, można zmienić prędkość
+let currentMode = "standard";
+
+function updateModeButtons(mode) {
+  modeButtons.forEach(button => {
+    const isActive = button.dataset.mode === mode;
+    button.classList.toggle("active", isActive);
+    if (isActive) {
+      button.classList.add("btn-primary");
+      button.classList.remove("btn-outline-dark");
+    } else {
+      button.classList.remove("btn-primary");
+      button.classList.add("btn-outline-dark");
+    }
+  });
+}
+
+function renderStandardRows(data) {
+  topBody.innerHTML = "";
+  scrollBody.innerHTML = "";
+
+  const sorted = data.slice().sort((a, b) => (b.result || 0) - (a.result || 0));
+
+  sorted.forEach((z, idx) => {
+    const tr = document.createElement("tr");
+
+    {% for col in columns %}
+    {
+      const td = document.createElement("td");
+      td.innerText = z["{{ col.name }}"];
+
+      // kolor maksymalnego wyniku
+      if ("{{ col.name }}".startsWith("parcour") && z["{{ col.name }}"] == 25) td.classList.add("max-score");
+
+      // pogrubienie nazwiska
+      if ("{{ col.name }}" === "lastname") td.classList.add("lastname");
+
+      tr.appendChild(td);
+    }
+    {% endfor %}
+
+    if(idx < 6) topBody.appendChild(tr);
+    else scrollBody.appendChild(tr);
+  });
+}
+
+function renderCategoryRows(data) {
+  categoryBody.innerHTML = "";
+
+  data.forEach(z => {
+    const tr = document.createElement("tr");
+
+    {% for col in columns %}
+    {
+      const td = document.createElement("td");
+      td.innerText = z["{{ col.name }}"];
+
+      if ("{{ col.name }}".startsWith("parcour") && z["{{ col.name }}"] == 25) td.classList.add("max-score");
+      if ("{{ col.name }}" === "lastname") td.classList.add("lastname");
+
+      tr.appendChild(td);
+    }
+    {% endfor %}
+
+    categoryBody.appendChild(tr);
+  });
+}
+
+function refreshTable() {
+  const params = new URLSearchParams();
+  if (currentMode === "category") {
+    params.set("sort", "category_result");
+    params.set("order", "asc");
+  } else {
+    params.set("sort", "result");
+    params.set("order", "desc");
+  }
+
+  const targetMode = currentMode;
+
+  fetch(`/live-data?${params.toString()}`)
+    .then(res => res.json())
+    .then(data => {
+      if (targetMode !== currentMode) return;
+      tableData = data;
+      if (currentMode === "category") {
+        renderCategoryRows(data);
+      } else {
+        renderStandardRows(data);
+      }
+    })
+    .catch(err => console.error("Błąd fetch:", err));
+}
+
+// auto-scroll dla drugiej tabeli
+function autoScroll() {
+  const container = currentMode === "category" ? categoryContainer : scrollContainer;
+  const body = currentMode === "category" ? categoryBody : scrollBody;
+
+  if (!container || !body) {
+    requestAnimationFrame(autoScroll);
+    return;
+  }
+
+  const totalHeight = body.scrollHeight;
+  const visibleHeight = container.clientHeight;
+  let scrollPos = currentMode === "category" ? scrollPosCategory : scrollPosStandard;
+
+  if (totalHeight <= visibleHeight) {
+    scrollPos = 0;
+    container.scrollTop = 0;
+  } else {
+    scrollPos += scrollSpeed;
+    if (scrollPos > totalHeight - visibleHeight) scrollPos = 0;
+    container.scrollTop = scrollPos;
+  }
+
+  if (currentMode === "category") {
+    scrollPosCategory = scrollPos;
+  } else {
+    scrollPosStandard = scrollPos;
+  }
+
+  requestAnimationFrame(autoScroll);
+}
+
+// Start
+refreshTable();
+setInterval(refreshTable, 5000); // live update co 5s
+requestAnimationFrame(autoScroll);
+
+modeButtons.forEach(button => {
+  button.addEventListener("click", () => {
+    const mode = button.dataset.mode;
+    if (mode === currentMode) return;
+
+    currentMode = mode;
+    updateModeButtons(mode);
+
+    if (mode === "category") {
+      standardView.classList.add("d-none");
+      categoryView.classList.remove("d-none");
+      scrollPosCategory = 0;
+      if (categoryContainer) categoryContainer.scrollTop = 0;
+    } else {
+      categoryView.classList.add("d-none");
+      standardView.classList.remove("d-none");
+      scrollPosStandard = 0;
+      scrollContainer.scrollTop = 0;
+    }
+
+    refreshTable();
+  });
+});
+
+updateModeButtons(currentMode);
+</script>
+
+</body>
+</html>

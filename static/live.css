@@ -1,0 +1,58 @@
+/* Dodatkowe odstępy między kolumnami */
+.col-gap-left { padding-left: 2rem !important; }
+.col-gap-right { padding-right: 2rem !important; }
+
+/* Kolorowanie wierszy grup */
+.group-even { background-color: #f2f2f2; }
+.group-odd { background-color: #f9f4ef; }
+
+/* Pogrubienie nazwiska */
+.lastname { font-weight: bold; }
+
+/* Wyniki maksymalne (25 pkt) – nadrzędny selektor, wyższa specyficzność */
+td.max-score {
+    color: rgb(255, 41, 41);
+    font-weight: bold;
+}
+
+/* Live table specific styles */
+.live-page {
+    --column-count: 1;
+    background-color: #f8f9fa;
+}
+
+.live-page .table-container {
+    height: 60vh;
+    overflow-y: hidden;
+    border: 2px solid #ddd;
+    border-radius: 10px;
+    background-color: white;
+    position: relative;
+}
+
+.live-page .live-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+.live-page .live-table th,
+.live-page .live-table td {
+    width: calc(100% / var(--column-count));
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.live-page .live-table thead th {
+    background-color: #000 !important;
+    color: #fff !important;
+}
+
+.live-page #scroll-container thead th,
+.live-page #category-container thead th {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+}

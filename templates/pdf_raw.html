@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>Wyniki PDF</title>
+<link rel="stylesheet" href="static/pdf.css">
+</head>
+<body>
+
+<h2>Wyniki zawodów</h2>
+
+<table>
+<thead>
+<tr>
+{% for col in columns %}
+<th>{{ col.label }}</th>
+{% endfor %}
+</tr>
+</thead>
+<tbody>
+{% for z in competitors %}
+{% set rank = category_rank_map.get(z.id) %}
+{% set color = category_rank_styles.get(z.id) %}
+<tr class="{% if rank %}rank-highlight rank-{{ rank }}{% endif %}"{% if color %} style="background-color: {{ color }};"{% endif %}>
+{% for col in columns %}
+<td{% if color %} style="background-color: {{ color }};"{% endif %}>{{ getattr(z, col.name) }}</td>
+{% endfor %}
+</tr>
+{% endfor %}
+</tbody>
+</table>
+
+</body>
+</html>

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>Metryki sędziowskie</title>
+<link rel="stylesheet" href="static/metrics.css">
+</head>
+<body>
+
+{% for squad, parcours in metrics.items() %}
+    {% for parcour in parcours %}
+    <section class="metric-page">
+        <div class="metric-header">
+            <div class="metric-header__group">Grupa {{ squad }}</div>
+            <div class="metric-header__title">Metryka strzelań — {{ parcour.label }}</div>
+        </div>
+
+        <table class="metric-table">
+            <thead>
+                <tr>
+                    <th rowspan="2" class="start-number">Numer startowy</th>
+                    <th rowspan="2" class="name-cell">Nazwisko imię</th>
+                    <th colspan="{{ series_range|length * shots_range|length }}" class="results-header">Wyniki strzelań</th>
+                    <th rowspan="2">Wynik</th>
+                    <th rowspan="2">Podpis</th>
+                </tr>
+                <tr>
+                    {% for series in series_range %}
+                    <th colspan="{{ shots_range|length }}" class="series-cell series-group-start series-group-end">Seria {{ series }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for competitor in parcour.competitors %}
+                    <tr>
+                        <td class="start-number">{{ competitor.number }}</td>
+                        <td class="name-cell">{{ competitor.name }}</td>
+                        {% for series_markers in competitor.markers %}
+                            {% for marker in series_markers %}
+                            {% if loop.index0 == 0 %}
+                                {% set cell_class = 'series-group-start' %}
+                            {% elif loop.last %}
+                                {% set cell_class = 'series-group-end' %}
+                            {% else %}
+                                {% set cell_class = '' %}
+                            {% endif %}
+                            <td class="{{ cell_class }}">{{ marker }}</td>
+                            {% endfor %}
+                        {% endfor %}
+                        <td></td>
+                        <td></td>
+                    </tr>
+                {% endfor %}
+                <tr>
+                    <td colspan="{{ total_columns }}" class="signature-row">Podpis sędziów:</td>
+                </tr>
+            </tbody>
+        </table>
+    </section>
+    {% endfor %}
+{% endfor %}
+
+</body>
+</html>

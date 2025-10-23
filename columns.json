@@ -1,0 +1,55 @@
+{
+    "columns": [
+        {
+            "name": "squad",
+            "label": "Grupa",
+            "editable": false
+        },
+        {
+            "name": "number",
+            "label": "Numer",
+            "editable": false
+        },
+        {
+            "name": "name",
+            "label": "Imie",
+            "editable": true
+        },
+        {
+            "name": "lastname",
+            "label": "Nazwisko",
+            "editable": true
+        },
+        {
+            "name": "category",
+            "label": "Klasa",
+            "editable": true
+        },
+        {
+            "name": "parcour1",
+            "label": "Parkur 1",
+            "editable": true
+        },
+        {
+            "name": "parcour2",
+            "label": "Parkur 2",
+            "editable": true
+        },
+        {
+            "name": "parcour3",
+            "label": "Parkur 3",
+            "editable": true
+        },
+        {
+            "name": "parcour4",
+            "label": "Parkur 4",
+            "editable": true
+        },
+        {
+            "name": "result",
+            "label": "Wynik",
+            "editable": false
+        }
+    ]
+}
+  

@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>Wyniki zawodów</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="{{ url_for('static', filename='index.css') }}" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+</head>
+<body class="bg-light p-4">
+
+<h1 class="mb-4" id="page-title" contenteditable="true" spellcheck="false" data-default="{{ default_page_title }}">{{ page_title }}</h1>
+
+<div class="d-flex flex-wrap align-items-center gap-2 mb-4">
+    <a href="/live" target="_blank" class="btn btn-primary">Podgląd tabeli (Live)</a>
+    <a href="{{ url_for('export_pdf', sort=sort, order=order) }}" class="btn btn-success">Export tabeli</a>
+    <a href="/metrics-pdf" class="btn btn-secondary">Generacja metryk</a>
+    <div class="btn-group" role="group" aria-label="Sortowanie kategorii">
+        <a href="{{ url_for('index', sort='category_result', order='asc') }}"
+           class="btn btn-outline-dark {% if sort == 'category_result' and order != 'desc' %}active{% endif %}">
+            Kategorie A→Z, wynik malejąco
+        </a>
+    </div>
+</div>
+
+<div class="table-responsive">
+<table class="table table-striped table-hover table-bordered align-middle text-center" id="tabela">
+<thead class="table-dark">
+<tr>
+{% for col in columns %}
+    {% set th_class = '' %}
+    {% if col.name == 'category' or col.name == 'parcour1' %}{% set th_class = 'col-gap-right' %}
+    {% elif col.name == 'parcour4' or col.name == 'result' %}{% set th_class = 'col-gap-left' %}{% endif %}
+    <th class="{{ th_class }} cursor-pointer">
+        <a href="/?sort={{ col.name }}&order={% if sort==col.name and order=='asc' %}desc{% else %}asc{% endif %}" class="text-white text-decoration-none">
+            {{ col.label }}
+            {% if sort==col.name %}
+                {% if order=='asc' %}↑{% else %}↓{% endif %}
+            {% endif %}
+        </a>
+    </th>
+{% endfor %}
+</tr>
+</thead>
+<tbody>
+{% for z in competitors %}
+<tr x-data="{}" class="{{ 'group-even' if z.squad % 2 == 0 else 'group-odd' }}">
+{% for col in columns %}
+    {% set td_class = '' %}
+    {% if col.name == 'category' or col.name == 'parcour1' %}{% set td_class = 'col-gap-right' %}
+    {% elif col.name == 'parcour4' or col.name == 'result' %}{% set td_class = 'col-gap-left' %}{% endif %}
+    {% if col.name == 'lastname' %}{% set td_class = td_class + ' lastname' %}{% endif %}
+    {% if col.name.startswith('parcour') and getattr(z, col.name) == 25 %}{% set td_class = td_class + ' max-score' %}{% endif %}
+    {% if col.name == 'category' %}
+<td class="{{ td_class }}">
+    <select class="form-select form-select-sm category-select"
+    @change="
+        fetch('/update',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({id:{{ z.id }}, field:'{{ col.name }}', value:$event.target.value})
+        })
+        .then(r=>r.json())
+        .then(res=>{
+            const row = $event.target.closest('tr');
+            const cells = row.children;
+            {% for c in columns %}
+            {
+                const cell = cells[{{ loop.index0 }}];
+                if('{{ c.name }}' === 'category'){
+                    const selectEl = cell.querySelector('select');
+                    if(selectEl){
+                        const newValue = res['{{ c.name }}'] || '';
+                        if(newValue){
+                            let hasOption = false;
+                            for(const option of selectEl.options){
+                                if(option.value === newValue){
+                                    hasOption = true;
+                                    break;
+                                }
+                            }
+                            if(!hasOption){
+                                const opt = document.createElement('option');
+                                opt.value = newValue;
+                                opt.textContent = newValue;
+                                selectEl.appendChild(opt);
+                            }
+                        }
+                        selectEl.value = newValue;
+                    } else {
+                        cell.textContent = res['{{ c.name }}'];
+                    }
+                } else {
+                    cell.textContent = res['{{ c.name }}'];
+                }
+
+                if('{{ c.name }}'.startsWith('parcour') && res['{{ c.name }}'] == 25){
+                    cell.classList.add('max-score');
+                } else {
+                    cell.classList.remove('max-score');
+                }
+            }
+            {% endfor %}
+
+            const g = parseInt(res.squad) || 1;
+            row.className = (g%2==0)?'group-even':'group-odd';
+        })">
+        {% set allowed_categories = ['A', 'B', 'C', 'Junior', 'Lady', 'Senior'] %}
+        {% set current_category = getattr(z, col.name) %}
+        {% if current_category and current_category not in allowed_categories %}
+        <option value="{{ current_category }}" selected>{{ current_category }}</option>
+        {% endif %}
+        {% for option in allowed_categories %}
+        <option value="{{ option }}" {% if current_category == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+    </select>
+</td>
+    {% else %}
+<td class="{{ td_class }}" {% if col.name in editable_columns %} contenteditable {% endif %}
+@blur="
+    fetch('/update',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({id:{{ z.id }}, field:'{{ col.name }}', value:$el.innerText})
+    })
+    .then(r=>r.json())
+    .then(res=>{
+        const row = $el.parentNode;
+        const cells = row.children;
+        {% for c in columns %}
+        {
+            const cell = cells[{{ loop.index0 }}];
+            if('{{ c.name }}' === 'category'){
+                const selectEl = cell.querySelector('select');
+                if(selectEl){
+                    const newValue = res['{{ c.name }}'] || '';
+                    if(newValue){
+                        let hasOption = false;
+                        for(const option of selectEl.options){
+                            if(option.value === newValue){
+                                hasOption = true;
+                                break;
+                            }
+                        }
+                        if(!hasOption){
+                            const opt = document.createElement('option');
+                            opt.value = newValue;
+                            opt.textContent = newValue;
+                            selectEl.appendChild(opt);
+                        }
+                    }
+                    selectEl.value = newValue;
+                } else {
+                    cell.textContent = res['{{ c.name }}'];
+                }
+            } else {
+                cell.textContent = res['{{ c.name }}'];
+            }
+
+            if('{{ c.name }}'.startsWith('parcour') && res['{{ c.name }}'] == 25){
+                cell.classList.add('max-score');
+            } else {
+                cell.classList.remove('max-score');
+            }
+        }
+        {% endfor %}
+
+        const g = parseInt(res.squad) || 1;
+        row.className = (g%2==0)?'group-even':'group-odd';
+    })"
+>
+{{ getattr(z, col.name) }}
+</td>
+    {% endif %}
+{% endfor %}
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+    const titleEl = document.getElementById("page-title");
+    if (!titleEl) {
+        return;
+    }
+
+    const defaultTitle = titleEl.dataset.default || "";
+    let lastSavedTitle = titleEl.innerText.trim();
+
+    const sanitizeTitle = (value) => {
+        if (!value) {
+            return "";
+        }
+        return value.split(/\s+/).join(" ").trim();
+    };
+
+    const commitTitleChange = () => {
+        const rawTitle = sanitizeTitle(titleEl.innerText);
+        const nextTitle = rawTitle || defaultTitle || lastSavedTitle;
+
+        if (nextTitle !== rawTitle) {
+            titleEl.innerText = nextTitle;
+        }
+
+        if (nextTitle === lastSavedTitle) {
+            return;
+        }
+
+        fetch("/settings/title", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ title: nextTitle }),
+        })
+            .then((response) => response.json())
+            .then((payload) => {
+                if (payload && payload.page_title) {
+                    lastSavedTitle = sanitizeTitle(payload.page_title) || defaultTitle;
+                    titleEl.innerText = lastSavedTitle;
+                }
+            })
+            .catch(() => {
+                titleEl.innerText = lastSavedTitle;
+            });
+    };
+
+    titleEl.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            titleEl.blur();
+        }
+    });
+
+    titleEl.addEventListener("blur", commitTitleChange);
+});
+</script>
+
+</body>
+</html>
