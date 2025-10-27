@@ -7,10 +7,10 @@ import shutil
 import tempfile
 from copy import deepcopy
 from collections import defaultdict
+from collections.abc import Iterable, Sequence
 from colorsys import hsv_to_rgb
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from flask import (
     Flask,
@@ -39,7 +39,7 @@ SHOTS_PER_SERIES = 5
 INSTANCE_PATH = BASE_DIR / "instance"
 SETTINGS_PATH = INSTANCE_PATH / "settings.json"
 DATABASE_PATH = INSTANCE_PATH / DATABASE_NAME
-DEFAULT_COLUMNS: List[Dict[str, Any]] = [
+DEFAULT_COLUMNS: list[dict[str, object]] = [
     {"name": "squad", "label": "Grupa", "editable": False},
     {"name": "number", "label": "Numer", "editable": False},
     {"name": "name", "label": "Imię", "editable": True},
@@ -63,8 +63,8 @@ app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DATABASE_NAME}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db = SQLAlchemy(app)
 
-def load_app_settings() -> Dict[str, Any]:
-    settings: Dict[str, Any] = deepcopy(DEFAULT_SETTINGS)
+def load_app_settings() -> dict[str, object]:
+    settings: dict[str, object] = deepcopy(DEFAULT_SETTINGS)
     if SETTINGS_PATH.exists():
         try:
             with SETTINGS_PATH.open(encoding="utf-8") as handle:
@@ -78,7 +78,7 @@ def load_app_settings() -> Dict[str, Any]:
 
             columns_value = raw_settings.get("columns")
             if isinstance(columns_value, list):
-                normalized_columns: List[Dict[str, Any]] = []
+                normalized_columns: list[dict[str, object]] = []
                 for column in columns_value:
                     if not isinstance(column, dict):
                         continue
@@ -105,7 +105,7 @@ def load_app_settings() -> Dict[str, Any]:
     return settings
 
 
-def save_app_settings(settings: Dict[str, Any]) -> None:
+def save_app_settings(settings: dict[str, object]) -> None:
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     with SETTINGS_PATH.open("w", encoding="utf-8") as handle:
         json.dump(settings, handle, ensure_ascii=False, indent=2)
@@ -115,7 +115,7 @@ TOP_RANK_VALUE = {1: 0.9, 2: 0.94, 3: 0.97}
 UNCATEGORIZED_LABEL = "Uncategorized"
 
 _app_settings_initial = load_app_settings()
-COLUMNS: List[Dict[str, Any]] = deepcopy(_app_settings_initial.get("columns", DEFAULT_COLUMNS))
+COLUMNS: list[dict[str, object]] = deepcopy(_app_settings_initial.get("columns", DEFAULT_COLUMNS))
 EDITABLE_COLUMNS = [column["name"] for column in COLUMNS if column.get("editable")]
 PARCOUR_LABELS = [column["label"] for column in COLUMNS if column["name"] in PARCOUR_FIELDS]
 
@@ -127,16 +127,16 @@ def _rgb_float_to_hex(rgb: Sequence[float]) -> str:
     return f"#{red:02x}{green:02x}{blue:02x}"
 
 
-def generate_category_rank_colors(categories: Iterable[str]) -> Dict[str, Dict[int, str]]:
+def generate_category_rank_colors(categories: Iterable[str]) -> dict[str, dict[int, str]]:
     category_list = sorted(categories)
     if not category_list:
         return {}
 
-    colors: Dict[str, Dict[int, str]] = {}
+    colors: dict[str, dict[int, str]] = {}
     hue_step = 0.6180339887498949  # irrational number for pleasant hue distribution
     for idx, category in enumerate(category_list):
         hue = (idx * hue_step) % 1.0
-        rank_colors: Dict[int, str] = {}
+        rank_colors: dict[int, str] = {}
         for rank in (1, 2, 3):
             saturation = TOP_RANK_SATURATION.get(rank, 0.5)
             value = TOP_RANK_VALUE.get(rank, 0.95)
@@ -174,18 +174,18 @@ class Competitor(db.Model):
     def result(self):
         return sum(getattr(self, field) or 0 for field in PARCOUR_FIELDS)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {column["name"]: getattr(self, column["name"]) for column in COLUMNS}
 
 
-def _safe_int(value: Any, fallback: int = 0) -> int:
+def _safe_int(value: object, fallback: int = 0) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
         return fallback
 
 
-def calculate_competitors_hash(competitors: Sequence["Competitor"]) -> Optional[str]:
+def calculate_competitors_hash(competitors: list["Competitor"]) -> str | None:
     if not competitors:
         return None
     payload = [
@@ -199,10 +199,10 @@ def calculate_competitors_hash(competitors: Sequence["Competitor"]) -> Optional[
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-def calculate_records_hash(records: Sequence[Dict[str, Any]]) -> str:
+def calculate_records_hash(records: list[dict[str, object]]) -> str:
     normalized_payload = []
     for record in records:
-        normalized_entry: Dict[str, Any] = {"id": record.get("id")}
+        normalized_entry: dict[str, object] = {"id": record.get("id")}
         for column in COLUMNS:
             name = column["name"]
             normalized_entry[name] = record.get(name)
@@ -215,11 +215,11 @@ def calculate_records_hash(records: Sequence[Dict[str, Any]]) -> str:
 class AutoBackupManager:
     def __init__(self, interval_seconds: int = 300):
         self.interval_seconds = interval_seconds
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         self._dirty = True
-        self._last_hash: Optional[str] = None
+        self._last_hash: str | None = None
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -231,7 +231,7 @@ class AutoBackupManager:
         with self._lock:
             self._dirty = True
 
-    def update_last_hash(self, hash_value: Optional[str]) -> None:
+    def update_last_hash(self, hash_value: str | None) -> None:
         with self._lock:
             self._last_hash = hash_value
             self._dirty = False
@@ -239,7 +239,7 @@ class AutoBackupManager:
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    def _should_backup(self, hash_value: Optional[str]) -> bool:
+    def _should_backup(self, hash_value: str | None) -> bool:
         with self._lock:
             if self._dirty:
                 return True
@@ -272,15 +272,15 @@ auto_backup_manager = AutoBackupManager()
 class MetricsCache:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._hash: Optional[str] = None
-        self._payload: Optional[Dict[int, List[Dict[str, Any]]]] = None
+        self._hash: str | None = None
+        self._payload: dict[int, list[dict[str, object]]] | None = None
 
     def invalidate(self) -> None:
         with self._lock:
             self._hash = None
             self._payload = None
 
-    def get(self, competitors: Sequence[Competitor], hash_value: Optional[str]) -> Dict[int, List[Dict[str, Any]]]:
+    def get(self, competitors: list[Competitor], hash_value: str | None) -> dict[int, list[dict[str, object]]]:
         if hash_value:
             with self._lock:
                 if self._hash == hash_value and self._payload is not None:
@@ -319,7 +319,7 @@ def ensure_database_ready() -> None:
         db.create_all()
 
 
-def serialize_competitor_for_backup(competitor: "Competitor") -> Dict[str, Any]:
+def serialize_competitor_for_backup(competitor: "Competitor") -> dict[str, object]:
     record = competitor.to_dict()
     record["id"] = competitor.id
     record["result"] = competitor.result
@@ -327,8 +327,8 @@ def serialize_competitor_for_backup(competitor: "Competitor") -> Dict[str, Any]:
 
 
 def create_competitors_backup(
-    competitors: Sequence["Competitor"], *, hash_value: Optional[str] = None
-) -> Optional[Path]:
+    competitors: list["Competitor"], *, hash_value: str | None = None
+) -> Path | None:
     if not competitors:
         return None
 
@@ -352,7 +352,7 @@ def create_competitors_backup(
     return backup_path
 
 
-def restore_competitors_from_snapshot(snapshot: Dict[str, Any]) -> Tuple[int, str]:
+def restore_competitors_from_snapshot(snapshot: dict[str, object]) -> tuple[int, str]:
     ensure_database_ready()
     records = snapshot.get("records")
     if not isinstance(records, list):
@@ -362,7 +362,7 @@ def restore_competitors_from_snapshot(snapshot: Dict[str, Any]) -> Tuple[int, st
         db.session.execute(delete(Competitor))
         db.session.flush()
 
-        competitors_to_insert: List[Competitor] = []
+        competitors_to_insert: list[Competitor] = []
         for record in records:
             raw_id = record.get("id")
             try:
@@ -453,7 +453,7 @@ def create_placeholder_competitors(count: int) -> int:
     if existing > 0:
         return 0
 
-    placeholder_competitors: List[Competitor] = []
+    placeholder_competitors: list[Competitor] = []
     for idx in range(target_count):
         squad_number = idx // SQUAD_SIZE + 1
         placeholder_competitors.append(
@@ -479,7 +479,7 @@ def create_placeholder_competitors(count: int) -> int:
     return len(placeholder_competitors)
 
 
-def clamp_score(value: Any) -> int:
+def clamp_score(value: object) -> int:
     try:
         score = int(value)
     except (TypeError, ValueError):
@@ -490,7 +490,7 @@ def init_db():
     db.create_all()
 
 
-def fetch_competitors(sort: str, order: str) -> List[Competitor]:
+def fetch_competitors(sort: str, order: str) -> list[Competitor]:
     requested_sort = (sort or "number").lower()
     requested_order = (order or "asc").lower()
 
@@ -501,7 +501,7 @@ def fetch_competitors(sort: str, order: str) -> List[Competitor]:
             reverse=requested_order == "desc",
         )
     elif requested_sort == "category_result":
-        competitors_by_category: Dict[str, List[Competitor]] = defaultdict(list)
+        competitors_by_category: dict[str, list[Competitor]] = defaultdict(list)
         for competitor in Competitor.query.all():
             category = competitor.category or UNCATEGORIZED_LABEL
             competitors_by_category[category].append(competitor)
@@ -531,25 +531,25 @@ def fetch_competitors(sort: str, order: str) -> List[Competitor]:
 
     return competitors
 
-def group_competitors_by_squad(competitors: Sequence[Competitor]) -> Dict[int, List[Competitor]]:
-    squads: Dict[int, List[Competitor]] = defaultdict(list)
+def group_competitors_by_squad(competitors: list[Competitor]) -> dict[int, list[Competitor]]:
+    squads: dict[int, list[Competitor]] = defaultdict(list)
     for competitor in competitors:
         squads[competitor.squad].append(competitor)
     return squads
 
 
-def build_metrics_data(competitors: Sequence[Competitor]) -> Dict[int, List[Dict[str, Any]]]:
+def build_metrics_data(competitors: list[Competitor]) -> dict[int, list[dict[str, object]]]:
     squads = group_competitors_by_squad(competitors)
-    metrics: Dict[int, List[Dict[str, Any]]] = {}
+    metrics: dict[int, list[dict[str, object]]] = {}
     empty_markers_template = [["" for _ in range(SHOTS_PER_SERIES)] for _ in range(SERIES_COUNT)]
 
     for squad_number in sorted(squads):
         members = squads[squad_number]
         row_count = max(SQUAD_SIZE, len(members))
-        squad_metrics: List[Dict[str, Any]] = []
+        squad_metrics: list[dict[str, object]] = []
 
         for field_index, (field, label) in enumerate(zip(PARCOUR_FIELDS, PARCOUR_LABELS)):
-            entries: List[Dict[str, Any]] = []
+            entries: list[dict[str, object]] = []
 
             member_count = len(members)
             if member_count:
@@ -597,22 +597,22 @@ def build_metrics_data(competitors: Sequence[Competitor]) -> Dict[int, List[Dict
     return metrics
 
 
-def build_results_pdf_bytes(competitors: Sequence[Competitor], sort: str, order: str) -> bytes:
-    category_groups: Dict[str, List[Competitor]] = defaultdict(list)
-    competitor_categories: Dict[int, str] = {}
+def build_results_pdf_bytes(competitors: list[Competitor], sort: str, order: str) -> bytes:
+    category_groups: dict[str, list[Competitor]] = defaultdict(list)
+    competitor_categories: dict[int, str] = {}
     for competitor in competitors:
         category = competitor.category or UNCATEGORIZED_LABEL
         category_groups[category].append(competitor)
         competitor_categories[competitor.id] = category
 
-    rank_map: Dict[int, int] = {}
+    rank_map: dict[int, int] = {}
     for category, members in category_groups.items():
         ranked_members = sorted(members, key=lambda competitor: competitor.result, reverse=True)
         for position, competitor in enumerate(ranked_members[:3], start=1):
             rank_map[competitor.id] = position
 
     category_colors = generate_category_rank_colors(category_groups.keys())
-    highlight_styles: Dict[int, str] = {}
+    highlight_styles: dict[int, str] = {}
     for competitor_id, rank in rank_map.items():
         category = competitor_categories.get(competitor_id, UNCATEGORIZED_LABEL)
         color = category_colors.get(category, {}).get(rank)
@@ -638,7 +638,7 @@ def build_results_pdf_bytes(competitors: Sequence[Competitor], sort: str, order:
     return pdf_bytes
 
 
-def build_metrics_pdf_bytes(metrics: Dict[int, List[Dict[str, Any]]]) -> bytes:
+def build_metrics_pdf_bytes(metrics: dict[int, list[dict[str, object]]]) -> bytes:
     rendered = render_template(
         "metrics.html",
         metrics=metrics,
@@ -673,7 +673,7 @@ def initial_setup():
     settings = load_app_settings()
     default_competitor_count = settings.get("competitor_count", DEFAULT_COMPETITORS)
     default_page_title = settings.get("page_title", DEFAULT_SETTINGS["page_title"])
-    error: Optional[str] = None
+    error: str | None = None
     field_value: str = str(default_competitor_count)
     name_value: str = str(default_page_title)
 
@@ -793,7 +793,7 @@ def clear_competitors():
         auto_backup_manager.mark_dirty()
         metrics_cache.invalidate()
 
-    response_payload: Dict[str, Any] = {"status": "ok", "cleared": cleared_count}
+    response_payload: dict[str, object] = {"status": "ok", "cleared": cleared_count}
     if backup_path:
         try:
             response_payload["backup"] = str(backup_path.relative_to(BASE_DIR))
@@ -1008,7 +1008,7 @@ def export_pdf():
 
     response = make_response(pdf)
     response.headers['Content-Type'] = 'application/pdf'
-    response.headers['Content-Disposition'] = 'attachment; filename=results.pdf'
+    response.headers['Content-Disposition'] = 'attachment; filename=wyniki.pdf'
     return response
 
 @app.route("/metrics-pdf")
@@ -1023,7 +1023,7 @@ def export_metrics_pdf():
 
     response = make_response(pdf)
     response.headers["Content-Type"] = "application/pdf"
-    response.headers["Content-Disposition"] = "attachment; filename=metrics.pdf"
+    response.headers["Content-Disposition"] = "attachment; filename=metryki.pdf"
     return response
 
 
