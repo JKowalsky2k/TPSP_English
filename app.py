@@ -5,11 +5,15 @@ import threading
 import re
 import shutil
 import tempfile
+import functools
+import html
+import os
 from copy import deepcopy
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from colorsys import hsv_to_rgb
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 from flask import (
@@ -25,8 +29,30 @@ from flask import (
 )
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
-from weasyprint import HTML, CSS
 from sqlalchemy import delete, inspect
+
+_REPORTLAB_IMPORT_ERROR: Exception | None = None
+try:
+    from reportlab.lib import colors as rl_colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        PageBreak,
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
+    )
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+except ImportError as exc:
+    REPORTLAB_AVAILABLE = False
+    _REPORTLAB_IMPORT_ERROR = exc
+else:
+    REPORTLAB_AVAILABLE = True
 
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE_NAME = "competitors.db"
@@ -113,6 +139,111 @@ def save_app_settings(settings: dict[str, object]) -> None:
 TOP_RANK_SATURATION = {1: 0.65, 2: 0.55, 3: 0.45}
 TOP_RANK_VALUE = {1: 0.9, 2: 0.94, 3: 0.97}
 UNCATEGORIZED_LABEL = "Uncategorized"
+PDF_FONT_REGULAR_NAME = "TPSP-Regular"
+PDF_FONT_BOLD_NAME = "TPSP-Bold"
+
+_registered_pdf_fonts: tuple[str, str] | None = None
+
+
+def _candidate_font_directories() -> list[Path]:
+    candidates: list[Path] = []
+    for directory in (
+        BASE_DIR / "static" / "fonts",
+        BASE_DIR / "fonts",
+        Path.home() / ".fonts",
+        Path("/usr/share/fonts/truetype/dejavu"),
+        Path("/usr/share/fonts/truetype/liberation"),
+        Path("/usr/share/fonts/truetype/noto"),
+        Path("/usr/share/fonts/truetype/freefont"),
+        Path("/usr/share/fonts/truetype/msttcorefonts"),
+        Path("/usr/local/share/fonts"),
+        Path("/Library/Fonts"),
+        Path("/System/Library/Fonts"),
+    ):
+        if directory.exists():
+            candidates.append(directory)
+
+    windows_font_dir = os.environ.get("WINDIR")
+    if windows_font_dir:
+        path = Path(windows_font_dir) / "Fonts"
+        if path.exists():
+            candidates.append(path)
+
+    return candidates
+
+
+def _resolve_font_files() -> tuple[Path | None, Path | None]:
+    if not REPORTLAB_AVAILABLE:
+        return None, None
+
+    font_pairs: list[tuple[str, str | None]] = [
+        ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf"),
+        ("arial.ttf", "arialbd.ttf"),
+        ("Arial.ttf", "arialbd.ttf"),
+        ("Arial.ttf", "Arial Bold.ttf"),
+        ("Calibri.ttf", "calibrib.ttf"),
+        ("LiberationSans-Regular.ttf", "LiberationSans-Bold.ttf"),
+        ("NotoSans-Regular.ttf", "NotoSans-Bold.ttf"),
+        ("FreeSans.ttf", "FreeSansBold.ttf"),
+    ]
+
+    directories = _candidate_font_directories()
+    for regular_name, bold_name in font_pairs:
+        regular_path: Path | None = None
+        bold_path: Path | None = None
+
+        for directory in directories:
+            candidate = directory / regular_name
+            if candidate.exists():
+                regular_path = candidate
+                break
+
+        if not regular_path:
+            continue
+
+        if bold_name:
+            for directory in directories:
+                candidate_bold = directory / bold_name
+                if candidate_bold.exists():
+                    bold_path = candidate_bold
+                    break
+
+        if not bold_path:
+            bold_path = regular_path
+
+        return regular_path, bold_path
+
+    return None, None
+
+
+def _register_pdf_fonts() -> tuple[str, str]:
+    global _registered_pdf_fonts
+    if _registered_pdf_fonts is not None:
+        return _registered_pdf_fonts
+
+    _ensure_pdf_backend()
+    regular_path, bold_path = _resolve_font_files()
+    if regular_path is None:
+        raise RuntimeError(
+            "Nie znaleziono czcionki obsługującej polskie znaki. "
+            "Skopiuj np. plik DejaVuSans.ttf do katalogu static/fonts i spróbuj ponownie."
+        )
+
+    try:
+        pdfmetrics.registerFont(TTFont(PDF_FONT_REGULAR_NAME, str(regular_path)))
+    except Exception as exc:  # pragma: no cover - defensive
+        raise RuntimeError(f"Nie udało się załadować czcionki PDF z pliku {regular_path}") from exc
+
+    if bold_path is None:
+        bold_path = regular_path
+
+    try:
+        pdfmetrics.registerFont(TTFont(PDF_FONT_BOLD_NAME, str(bold_path)))
+    except Exception:
+        pdfmetrics.registerFont(TTFont(PDF_FONT_BOLD_NAME, str(regular_path)))
+
+    _registered_pdf_fonts = (PDF_FONT_REGULAR_NAME, PDF_FONT_BOLD_NAME)
+    return _registered_pdf_fonts
 
 _app_settings_initial = load_app_settings()
 COLUMNS: list[dict[str, object]] = deepcopy(_app_settings_initial.get("columns", DEFAULT_COLUMNS))
@@ -145,6 +276,91 @@ def generate_category_rank_colors(categories: Iterable[str]) -> dict[str, dict[i
         colors[category] = rank_colors
 
     return colors
+
+
+def _ensure_pdf_backend() -> None:
+    if REPORTLAB_AVAILABLE:
+        return
+    message = "ReportLab library is required for PDF export. Install it with `pip install reportlab`."
+    if _REPORTLAB_IMPORT_ERROR:
+        raise RuntimeError(message) from _REPORTLAB_IMPORT_ERROR
+    raise RuntimeError(message)
+
+
+def _clean_cell_value(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+@functools.lru_cache(maxsize=1)
+def _get_pdf_styles() -> dict[str, ParagraphStyle]:
+    _ensure_pdf_backend()
+    regular_font, bold_font = _register_pdf_fonts()
+    base_styles = getSampleStyleSheet()
+    styles: dict[str, ParagraphStyle] = {}
+    styles["title"] = ParagraphStyle(
+        "PDFTitle",
+        parent=base_styles["Heading2"],
+        alignment=TA_LEFT,
+        spaceAfter=6,
+        fontName=bold_font,
+        fontSize=14,
+        leading=16,
+    )
+    styles["subtitle"] = ParagraphStyle(
+        "PDFSubtitle",
+        parent=base_styles["Heading4"],
+        alignment=TA_LEFT,
+        spaceAfter=4,
+        fontName=regular_font,
+        fontSize=11,
+        leading=13,
+    )
+    styles["table_header"] = ParagraphStyle(
+        "PDFTableHeader",
+        parent=base_styles["Normal"],
+        fontName=bold_font,
+        fontSize=9,
+        alignment=TA_CENTER,
+        leading=10,
+        splitLongWords=False,
+    )
+    styles["table_cell_center"] = ParagraphStyle(
+        "PDFTableCellCenter",
+        parent=base_styles["Normal"],
+        fontName=regular_font,
+        fontSize=9,
+        alignment=TA_CENTER,
+        leading=11,
+        splitLongWords=False,
+    )
+    styles["table_cell_left"] = ParagraphStyle(
+        "PDFTableCellLeft",
+        parent=base_styles["Normal"],
+        fontName=regular_font,
+        fontSize=9,
+        alignment=TA_LEFT,
+        leading=11,
+        splitLongWords=False,
+    )
+    styles["small_center"] = ParagraphStyle(
+        "PDFSmallCenter",
+        parent=styles["table_cell_center"],
+        fontSize=8,
+        leading=9,
+        splitLongWords=False,
+    )
+    return styles
+
+
+def _paragraph(text: str, style: ParagraphStyle) -> Paragraph:
+    content = html.escape(text) if text else "&nbsp;"
+    return Paragraph(content or "&nbsp;", style)
 FIRST_NAMES = [
     "Alex", "Jordan", "Taylor", "Morgan", "Casey", "Riley", "Cameron", "Avery",
     "Quinn", "Harper", "Jamie", "Reese", "Logan", "Rowan", "Peyton", "Dakota",
@@ -598,6 +814,8 @@ def build_metrics_data(competitors: list[Competitor]) -> dict[int, list[dict[str
 
 
 def build_results_pdf_bytes(competitors: list[Competitor], sort: str, order: str) -> bytes:
+    _ensure_pdf_backend()
+
     category_groups: dict[str, list[Competitor]] = defaultdict(list)
     competitor_categories: dict[int, str] = {}
     for competitor in competitors:
@@ -619,43 +837,300 @@ def build_results_pdf_bytes(competitors: list[Competitor], sort: str, order: str
         if color:
             highlight_styles[competitor_id] = color
 
-    rendered = render_template(
-        "pdf_raw.html",
-        competitors=competitors,
-        columns=COLUMNS,
-        getattr=getattr,
-        category_rank_map=rank_map,
-        category_rank_styles=highlight_styles,
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=15 * mm,
+        rightMargin=15 * mm,
+        topMargin=18 * mm,
+        bottomMargin=18 * mm,
     )
+    styles = _get_pdf_styles()
+    regular_font, bold_font = _register_pdf_fonts()
 
-    pdf_bytes = HTML(string=rendered, base_url=str(BASE_DIR)).write_pdf(
-        stylesheets=[
-            CSS(filename=str(BASE_DIR / "static" / "pdf.css")),
-            CSS(string='@page { size: A4 portrait; margin: 10mm }'),
+    elements: list[object] = []
+    elements.append(Paragraph("Wyniki zawodów", styles["title"]))
+
+    subtitle_parts: list[str] = []
+    if sort:
+        subtitle_parts.append(f"Sortowanie: {sort}")
+    if order:
+        order_label = "malejąco" if order == "desc" else "rosnąco"
+        subtitle_parts.append(f"Kolejność: {order_label}")
+    if subtitle_parts:
+        elements.append(Paragraph(", ".join(subtitle_parts), styles["subtitle"]))
+    elements.append(Spacer(1, 6))
+
+    table_data: list[list[object]] = []
+    header_row = [_paragraph(column["label"], styles["table_header"]) for column in COLUMNS]
+    table_data.append(header_row)
+
+    for competitor in competitors:
+        row_cells: list[object] = []
+        for column in COLUMNS:
+            column_name = column["name"]
+            value = getattr(competitor, column_name)
+            text_value = _clean_cell_value(value)
+            if column_name in {"name", "lastname", "category"}:
+                style = styles["table_cell_left"]
+            else:
+                style = styles["table_cell_center"]
+            row_cells.append(_paragraph(text_value, style))
+        table_data.append(row_cells)
+
+    column_widths: list[float] = []
+    for column in COLUMNS:
+        name = column["name"]
+        if name == "squad":
+            column_widths.append(13 * mm)
+        elif name == "number":
+            column_widths.append(16 * mm)
+        elif name == "name":
+            column_widths.append(24 * mm)
+        elif name == "lastname":
+            column_widths.append(28 * mm)
+        elif name == "category":
+            column_widths.append(18 * mm)
+        elif name.startswith("parcour"):
+            column_widths.append(18 * mm)
+        elif name == "result":
+            column_widths.append(20 * mm)
+        else:
+            column_widths.append(17 * mm)
+
+    total_width = sum(column_widths)
+    if total_width > doc.width:
+        scale = doc.width / total_width
+        column_widths = [width * scale for width in column_widths]
+
+    table = Table(table_data, colWidths=column_widths, repeatRows=1)
+    table_style = TableStyle(
+        [
+            ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#f0f0f0")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), rl_colors.black),
+            ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("FONTNAME", (0, 0), (-1, 0), bold_font),
+            ("FONTNAME", (0, 1), (-1, -1), regular_font),
+            ("FONTSIZE", (0, 0), (-1, 0), 9),
+            ("FONTSIZE", (0, 1), (-1, -1), 9),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, 0), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+            ("GRID", (0, 0), (-1, -1), 0.25, rl_colors.lightgrey),
         ]
     )
 
-    return pdf_bytes
+    for idx, column in enumerate(COLUMNS):
+        if column["name"] in {"name", "lastname", "category"}:
+            table_style.add("ALIGN", (idx, 1), (idx, -1), "LEFT")
+
+    for row_index, competitor in enumerate(competitors, start=1):
+        color_hex = highlight_styles.get(competitor.id)
+        if color_hex:
+            table_style.add("BACKGROUND", (0, row_index), (-1, row_index), rl_colors.HexColor(color_hex))
+
+    table.setStyle(table_style)
+    elements.append(table)
+
+    doc.build(elements)
+    return buffer.getvalue()
 
 
 def build_metrics_pdf_bytes(metrics: dict[int, list[dict[str, object]]]) -> bytes:
-    rendered = render_template(
-        "metrics.html",
-        metrics=metrics,
-        series_range=range(1, SERIES_COUNT + 1),
-        shots_range=range(1, SHOTS_PER_SERIES + 1),
-        shots_per_series=SHOTS_PER_SERIES,
-        total_columns=4 + SERIES_COUNT * SHOTS_PER_SERIES,
+    _ensure_pdf_backend()
+    styles = _get_pdf_styles()
+    regular_font, bold_font = _register_pdf_fonts()
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        leftMargin=12 * mm,
+        rightMargin=12 * mm,
+        topMargin=15 * mm,
+        bottomMargin=15 * mm,
     )
 
-    pdf_bytes = HTML(string=rendered, base_url=str(BASE_DIR)).write_pdf(
-        stylesheets=[
-            CSS(filename=str(BASE_DIR / "static" / "metrics.css")),
-            CSS(string='@page { size: A4 landscape; margin: 10mm }'),
-        ]
-    )
+    total_shots = SERIES_COUNT * SHOTS_PER_SERIES
+    elements: list[object] = []
+    first_section = True
 
-    return pdf_bytes
+    for squad_number in sorted(metrics):
+        parcours = metrics[squad_number]
+        for parcour in parcours:
+            if not first_section:
+                elements.append(PageBreak())
+            first_section = False
+
+            title_text = f"Grupa {squad_number}"
+            subtitle_text = f"Metryka strzelań — {parcour.get('label', '')}"
+            elements.append(Paragraph(title_text, styles["title"]))
+            elements.append(Paragraph(subtitle_text, styles["subtitle"]))
+            elements.append(Spacer(1, 6))
+
+            table_data: list[list[object]] = []
+            header_row_top = [
+                _paragraph("Numer startowy", styles["table_header"]),
+                _paragraph("Nazwisko imię", styles["table_header"]),
+                _paragraph("Wyniki strzelań", styles["table_header"]),
+            ]
+            header_row_top.extend(
+                [_paragraph("", styles["table_header"]) for _ in range(total_shots - 1)]
+            )
+            header_row_top.append(_paragraph("Wynik", styles["table_header"]))
+            header_row_top.append(_paragraph("Podpis", styles["table_header"]))
+            table_data.append(header_row_top)
+
+            header_row_second: list[object] = [
+                _paragraph("", styles["table_header"]),
+                _paragraph("", styles["table_header"]),
+            ]
+            for series_index in range(SERIES_COUNT):
+                header_row_second.append(
+                    _paragraph(f"Seria {series_index + 1}", styles["table_header"])
+                )
+                header_row_second.extend(
+                    [_paragraph("", styles["table_header"]) for _ in range(SHOTS_PER_SERIES - 1)]
+                )
+            header_row_second.append(_paragraph("", styles["table_header"]))
+            header_row_second.append(_paragraph("", styles["table_header"]))
+            table_data.append(header_row_second)
+
+            for entry in parcour.get("competitors", []):
+                number_text = _clean_cell_value(entry.get("number"))
+                name_text = _clean_cell_value(entry.get("name"))
+
+                numbers_row: list[object] = [
+                    _paragraph(number_text, styles["table_cell_center"]),
+                    _paragraph(name_text, styles["table_cell_left"]),
+                ]
+                markers_row: list[object] = [
+                    _paragraph("", styles["small_center"]),
+                    _paragraph("", styles["small_center"]),
+                ]
+
+                shot_counter = 0
+                markers_payload = entry.get("markers") or []
+                for series_markers in markers_payload:
+                    for marker_value in series_markers:
+                        marker_text = _clean_cell_value(marker_value).strip().upper()
+                        if marker_text != "X" and shot_counter < MAX_PARCOUR_SCORE:
+                            shot_counter += 1
+                            numbers_row.append(_paragraph(str(shot_counter), styles["small_center"]))
+                        else:
+                            numbers_row.append(_paragraph("", styles["small_center"]))
+                        markers_row.append(_paragraph(marker_text, styles["small_center"]))
+
+                while len(numbers_row) < 2 + total_shots:
+                    numbers_row.append(_paragraph("", styles["small_center"]))
+                while len(markers_row) < 2 + total_shots:
+                    markers_row.append(_paragraph("", styles["small_center"]))
+
+                numbers_row.append(_paragraph("", styles["small_center"]))
+                numbers_row.append(_paragraph("", styles["small_center"]))
+                markers_row.append(_paragraph("", styles["small_center"]))
+                markers_row.append(_paragraph("", styles["small_center"]))
+
+                table_data.append(numbers_row)
+                table_data.append(markers_row)
+
+            signature_row = [_paragraph("Podpis sędziów:", styles["table_cell_left"])]
+            total_columns = 2 + total_shots + 2
+            signature_row.extend(
+                [_paragraph("", styles["table_cell_left"]) for _ in range(total_columns - 1)]
+            )
+            table_data.append(signature_row)
+
+            number_width = 20 * mm
+            name_width = 48 * mm
+            result_width = 20 * mm
+            signature_width = 30 * mm
+            shot_width = 5.5 * mm
+            column_widths = (
+                [number_width, name_width]
+                + [shot_width] * total_shots
+                + [result_width, signature_width]
+            )
+
+            total_width = sum(column_widths)
+            if total_width > doc.width:
+                scale = doc.width / total_width
+                column_widths = [width * scale for width in column_widths]
+            else:
+                remaining = doc.width - total_width
+                if remaining > 0:
+                    column_widths[1] += remaining
+
+            table = Table(table_data, colWidths=column_widths, repeatRows=2)
+            table_style = TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 1), rl_colors.HexColor("#f0f0f0")),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("FONTNAME", (0, 0), (-1, 1), bold_font),
+                    ("FONTNAME", (0, 2), (-1, -2), regular_font),
+                    ("FONTSIZE", (0, 0), (-1, 1), 9),
+                    ("FONTSIZE", (0, 2), (-1, -2), 8),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                    ("TOPPADDING", (0, 0), (-1, 1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, 1), 6),
+                    ("GRID", (0, 0), (-1, -1), 0.25, rl_colors.lightgrey),
+                ]
+            )
+
+            total_columns = len(table_data[0])
+            shot_start = 2
+            shot_end = shot_start + total_shots - 1
+            table_style.add("SPAN", (0, 0), (0, 1))
+            table_style.add("SPAN", (1, 0), (1, 1))
+            table_style.add("SPAN", (shot_start, 0), (shot_end, 0))
+            table_style.add("SPAN", (shot_end + 1, 0), (shot_end + 1, 1))
+            table_style.add("SPAN", (shot_end + 2, 0), (shot_end + 2, 1))
+
+            for series_index in range(SERIES_COUNT):
+                start_col = shot_start + series_index * SHOTS_PER_SERIES
+                end_col = start_col + SHOTS_PER_SERIES - 1
+                table_style.add("SPAN", (start_col, 1), (end_col, 1))
+                if series_index > 0:
+                    table_style.add("LINEBEFORE", (start_col, 0), (start_col, -2), 0.5, rl_colors.black)
+                table_style.add("LINEAFTER", (end_col, 0), (end_col, -2), 0.5, rl_colors.black)
+                table_style.add("LEFTPADDING", (start_col, 2), (end_col, -2), 1)
+                table_style.add("RIGHTPADDING", (start_col, 2), (end_col, -2), 1)
+
+            competitor_count = len(parcour.get("competitors", []))
+            for competitor_index in range(competitor_count):
+                base_row = 2 + competitor_index * 2
+                table_style.add("SPAN", (0, base_row), (0, base_row + 1))
+                table_style.add("SPAN", (1, base_row), (1, base_row + 1))
+                table_style.add("SPAN", (shot_end + 1, base_row), (shot_end + 1, base_row + 1))
+                table_style.add("SPAN", (shot_end + 2, base_row), (shot_end + 2, base_row + 1))
+
+            last_row_index = len(table_data) - 1
+            table_style.add("SPAN", (0, last_row_index), (-1, last_row_index))
+            table_style.add("ALIGN", (0, last_row_index), (-1, last_row_index), "LEFT")
+            table_style.add("FONTNAME", (0, last_row_index), (-1, last_row_index), bold_font)
+            table_style.add("LEFTPADDING", (shot_end + 1, 2), (shot_end + 2, -2), 1.5)
+            table_style.add("RIGHTPADDING", (shot_end + 1, 2), (shot_end + 2, -2), 1.5)
+            table_style.add("ALIGN", (1, 2), (1, -2), "LEFT")
+            table_style.add(
+                "BACKGROUND",
+                (0, last_row_index),
+                (-1, last_row_index),
+                rl_colors.HexColor("#f9f9f9"),
+            )
+
+            table.setStyle(table_style)
+            elements.append(table)
+
+    if not elements:
+        elements.append(Paragraph("Brak danych metryk do wyświetlenia.", styles["table_cell_left"]))
+
+    doc.build(elements)
+    return buffer.getvalue()
 
 @app.before_request
 def ensure_auto_backup_worker() -> None:
