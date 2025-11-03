@@ -75,8 +75,12 @@
     {% if col.name == 'lastname' %}{% set td_class = td_class + ' lastname' %}{% endif %}
     {% if col.name.startswith('parcour') and getattr(z, col.name) == 25 %}{% set td_class = td_class + ' max-score' %}{% endif %}
     {% if col.name == 'category' %}
-<td class="{{ td_class }}">
+    {% set allowed_categories = ['A', 'B', 'C', 'Junior', 'Lady', 'Senior'] %}
+    {% set current_category = getattr(z, col.name) %}
+<td class="{{ td_class }}" data-grid-cell tabindex="-1">
     <select class="form-select form-select-sm category-select"
+    data-default-value="{{ allowed_categories|first }}"
+    data-persisted-value="{{ current_category or '' }}"
     @change="
         fetch('/update',{
             method:'POST',
@@ -93,23 +97,29 @@
                 if('{{ c.name }}' === 'category'){
                     const selectEl = cell.querySelector('select');
                     if(selectEl){
-                        const newValue = res['{{ c.name }}'] || '';
-                        if(newValue){
+                        const rawValue = res['{{ c.name }}'];
+                        const normalizedValue = rawValue === undefined || rawValue === null ? '' : String(rawValue);
+                        const defaultValue = selectEl.dataset.defaultValue || '';
+                        selectEl.dataset.persistedValue = normalizedValue;
+                        let nextValue = normalizedValue || defaultValue;
+                        if(nextValue){
                             let hasOption = false;
                             for(const option of selectEl.options){
-                                if(option.value === newValue){
+                                if(option.value === nextValue){
                                     hasOption = true;
                                     break;
                                 }
                             }
                             if(!hasOption){
                                 const opt = document.createElement('option');
-                                opt.value = newValue;
-                                opt.textContent = newValue;
+                                opt.value = nextValue;
+                                opt.textContent = nextValue;
                                 selectEl.appendChild(opt);
                             }
+                            selectEl.value = nextValue;
+                        } else {
+                            selectEl.value = '';
                         }
-                        selectEl.value = newValue;
                     } else {
                         cell.textContent = res['{{ c.name }}'];
                     }
@@ -128,8 +138,6 @@
             const g = parseInt(res.squad) || 1;
             row.className = (g%2==0)?'group-even':'group-odd';
         })">
-        {% set allowed_categories = ['A', 'B', 'C', 'Junior', 'Lady', 'Senior'] %}
-        {% set current_category = getattr(z, col.name) %}
         {% if current_category and current_category not in allowed_categories %}
         <option value="{{ current_category }}" selected>{{ current_category }}</option>
         {% endif %}
@@ -139,7 +147,7 @@
     </select>
 </td>
     {% else %}
-<td class="{{ td_class }}" {% if col.name in editable_columns %} contenteditable {% endif %}
+<td class="{{ td_class }}" data-grid-cell tabindex="-1" {% if col.name in editable_columns %} contenteditable {% endif %}
 @blur="
     fetch('/update',{
         method:'POST',
@@ -152,32 +160,38 @@
         const cells = row.children;
         {% for c in columns %}
         {
-            const cell = cells[{{ loop.index0 }}];
-            if('{{ c.name }}' === 'category'){
-                const selectEl = cell.querySelector('select');
-                if(selectEl){
-                    const newValue = res['{{ c.name }}'] || '';
-                    if(newValue){
-                        let hasOption = false;
-                        for(const option of selectEl.options){
-                            if(option.value === newValue){
-                                hasOption = true;
-                                break;
+                const cell = cells[{{ loop.index0 }}];
+                if('{{ c.name }}' === 'category'){
+                    const selectEl = cell.querySelector('select');
+                    if(selectEl){
+                        const rawValue = res['{{ c.name }}'];
+                        const normalizedValue = rawValue === undefined || rawValue === null ? '' : String(rawValue);
+                        const defaultValue = selectEl.dataset.defaultValue || '';
+                        selectEl.dataset.persistedValue = normalizedValue;
+                        let nextValue = normalizedValue || defaultValue;
+                        if(nextValue){
+                            let hasOption = false;
+                            for(const option of selectEl.options){
+                                if(option.value === nextValue){
+                                    hasOption = true;
+                                    break;
+                                }
                             }
+                            if(!hasOption){
+                                const opt = document.createElement('option');
+                                opt.value = nextValue;
+                                opt.textContent = nextValue;
+                                selectEl.appendChild(opt);
+                            }
+                            selectEl.value = nextValue;
+                        } else {
+                            selectEl.value = '';
                         }
-                        if(!hasOption){
-                            const opt = document.createElement('option');
-                            opt.value = newValue;
-                            opt.textContent = newValue;
-                            selectEl.appendChild(opt);
-                        }
+                    } else {
+                        cell.textContent = res['{{ c.name }}'];
                     }
-                    selectEl.value = newValue;
                 } else {
                     cell.textContent = res['{{ c.name }}'];
-                }
-            } else {
-                cell.textContent = res['{{ c.name }}'];
             }
 
             if('{{ c.name }}'.startsWith('parcour') && res['{{ c.name }}'] == 25){
@@ -302,6 +316,174 @@ document.addEventListener("DOMContentLoaded", () => {
                 .finally(() => {
                     syncDevMenuState();
                 });
+        });
+    }
+
+    const resultsTable = document.getElementById("tabela");
+    const tableBody = resultsTable ? resultsTable.querySelector("tbody") : null;
+
+    if (resultsTable && tableBody) {
+        const focusCell = (cell) => {
+            if (!cell) {
+                return;
+            }
+            const selectEl = cell.querySelector("select");
+            if (selectEl) {
+                if (typeof selectEl.focus === "function") {
+                    try {
+                        selectEl.focus({ preventScroll: true });
+                    } catch (error) {
+                        selectEl.focus();
+                    }
+                }
+                return;
+            }
+            if (typeof cell.focus === "function") {
+                try {
+                    cell.focus({ preventScroll: true });
+                } catch (error) {
+                    cell.focus();
+                }
+            }
+            if (cell.hasAttribute("contenteditable")) {
+                const selection = window.getSelection && window.getSelection();
+                if (!selection) {
+                    return;
+                }
+                const range = document.createRange();
+                range.selectNodeContents(cell);
+                selection.removeAllRanges();
+                selection.addRange(range);
+            }
+        };
+
+        const getCellCoordinates = (cell) => {
+            const row = cell.parentElement;
+            const rows = Array.from(tableBody.rows);
+            const rowIndex = rows.indexOf(row);
+            const cells = row ? Array.from(row.children) : [];
+            const colIndex = cells.indexOf(cell);
+            return { rowIndex, colIndex };
+        };
+
+        const pickTargetCell = (rowIndex, colIndex) => {
+            if (rowIndex < 0 || colIndex < 0) {
+                return null;
+            }
+            const row = tableBody.rows[rowIndex];
+            if (!row) {
+                return null;
+            }
+            return row.children[colIndex] || null;
+        };
+
+        resultsTable.addEventListener("mousedown", (event) => {
+            const cell = event.target.closest("td[data-grid-cell][contenteditable]");
+            if (cell) {
+                cell.dataset.pointerSelecting = "true";
+            }
+        });
+
+        resultsTable.addEventListener("mouseup", (event) => {
+            const cell = event.target.closest("td[data-grid-cell][contenteditable]");
+            if (cell) {
+                delete cell.dataset.pointerSelecting;
+            }
+        });
+
+        resultsTable.addEventListener("focusin", (event) => {
+            const cell = event.target.closest("td[data-grid-cell]");
+            if (!cell || !cell.hasAttribute("contenteditable")) {
+                return;
+            }
+            const pointerInitiated = cell.dataset.pointerSelecting === "true";
+            delete cell.dataset.pointerSelecting;
+            if (pointerInitiated) {
+                cell.dataset.overwriteOnType = "false";
+                return;
+            }
+            cell.dataset.overwriteOnType = "true";
+            const selection = window.getSelection && window.getSelection();
+            if (!selection) {
+                return;
+            }
+            const range = document.createRange();
+            range.selectNodeContents(cell);
+            selection.removeAllRanges();
+            selection.addRange(range);
+        });
+
+        resultsTable.addEventListener("focusout", (event) => {
+            const cell = event.target.closest("td[data-grid-cell]");
+            if (!cell) {
+                return;
+            }
+            delete cell.dataset.pointerSelecting;
+            delete cell.dataset.overwriteOnType;
+        });
+
+        resultsTable.addEventListener("keydown", (event) => {
+            const cell = event.target.closest("td[data-grid-cell]");
+            if (cell && cell.hasAttribute("contenteditable")) {
+                const isPrintableKey =
+                    event.key &&
+                    event.key.length === 1 &&
+                    !event.ctrlKey &&
+                    !event.metaKey &&
+                    !event.altKey;
+                if (cell.dataset.overwriteOnType === "true" && isPrintableKey) {
+                    cell.textContent = "";
+                    cell.dataset.overwriteOnType = "false";
+                } else if (isPrintableKey || event.key === "Backspace" || event.key === "Delete") {
+                    cell.dataset.overwriteOnType = "false";
+                }
+            }
+        });
+
+        resultsTable.addEventListener("keydown", (event) => {
+            if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+                return;
+            }
+            if (event.shiftKey || event.altKey || event.metaKey || event.ctrlKey) {
+                return;
+            }
+
+            const cell = event.target.closest("td[data-grid-cell]");
+            if (!cell) {
+                return;
+            }
+
+            if (event.target.tagName === "SELECT" && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+                return;
+            }
+
+            event.preventDefault();
+
+            const { rowIndex, colIndex } = getCellCoordinates(cell);
+            let targetRow = rowIndex;
+            let targetCol = colIndex;
+
+            switch (event.key) {
+                case "ArrowLeft":
+                    targetCol = colIndex - 1;
+                    break;
+                case "ArrowRight":
+                    targetCol = colIndex + 1;
+                    break;
+                case "ArrowUp":
+                    targetRow = rowIndex - 1;
+                    break;
+                case "ArrowDown":
+                    targetRow = rowIndex + 1;
+                    break;
+                default:
+                    return;
+            }
+
+            const targetCell = pickTargetCell(targetRow, targetCol);
+            if (targetCell && targetCell.dataset.gridCell !== undefined) {
+                focusCell(targetCell);
+            }
         });
     }
 
