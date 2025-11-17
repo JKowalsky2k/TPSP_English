@@ -8,11 +8,12 @@ import tempfile
 import functools
 import html
 import os
+import unicodedata
 from copy import deepcopy
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from colorsys import hsv_to_rgb
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
@@ -65,6 +66,11 @@ SHOTS_PER_SERIES = 5
 INSTANCE_PATH = BASE_DIR / "instance"
 SETTINGS_PATH = INSTANCE_PATH / "settings.json"
 DATABASE_PATH = INSTANCE_PATH / DATABASE_NAME
+DEFAULT_SCHEDULE_START_TIME = "08:00"
+DEFAULT_SCHEDULE_SLOT_MINUTES = 20
+DEFAULT_SCHEDULE_STAND_COUNT = 4
+DEFAULT_SCHEDULE_END_TIME = ""
+DEFAULT_SCHEDULE_ROUNDS = 2
 DEFAULT_COLUMNS: list[dict[str, object]] = [
     {"name": "squad", "label": "Grupa", "editable": False},
     {"name": "number", "label": "Numer", "editable": False},
@@ -81,8 +87,43 @@ DEFAULT_SETTINGS = {
     "page_title": "🏆 Wyniki zawodów",
     "columns": deepcopy(DEFAULT_COLUMNS),
     "competitor_count": DEFAULT_COMPETITORS,
+    "schedule_start_time": DEFAULT_SCHEDULE_START_TIME,
+    "schedule_slot_minutes": DEFAULT_SCHEDULE_SLOT_MINUTES,
+    "schedule_stand_count": DEFAULT_SCHEDULE_STAND_COUNT,
+    "schedule_end_time": DEFAULT_SCHEDULE_END_TIME,
 }
 BACKUP_DIR = SETTINGS_PATH.parent / "backups"
+
+def _normalize_time_string(value: object, fallback: str = DEFAULT_SCHEDULE_START_TIME) -> str:
+    raw_value = str(value or "").strip()
+    match = re.match(r"^(\d{1,2}):(\d{2})$", raw_value)
+    if not match:
+        return fallback
+    hour, minute = (int(part) for part in match.groups())
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return fallback
+    return f"{hour:02d}:{minute:02d}"
+
+def _clean_optional_time(value: object) -> str:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return ""
+    normalized = _normalize_time_string(raw_value, fallback="")
+    return normalized
+
+def _sanitize_pdf_text(text: object, fallback: str = "") -> str:
+    raw = "" if text is None else str(text)
+    stripped = "".join(ch for ch in raw if ch.isprintable())
+    normalized = unicodedata.normalize("NFKD", stripped)
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii", "ignore")
+    cleaned = ascii_only.strip()
+    return cleaned or fallback
+
+def _safe_int(value: object, fallback: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
 
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DATABASE_NAME}"
@@ -128,6 +169,29 @@ def load_app_settings() -> dict[str, object]:
                 competitor_count = settings.get("competitor_count", DEFAULT_COMPETITORS)
             if competitor_count > 0:
                 settings["competitor_count"] = competitor_count
+
+            schedule_start_time = _normalize_time_string(
+                raw_settings.get("schedule_start_time"), DEFAULT_SCHEDULE_START_TIME
+            )
+            settings["schedule_start_time"] = schedule_start_time
+
+            try:
+                schedule_slot_minutes = int(
+                    raw_settings.get("schedule_slot_minutes", DEFAULT_SCHEDULE_SLOT_MINUTES)
+                )
+            except (TypeError, ValueError):
+                schedule_slot_minutes = DEFAULT_SCHEDULE_SLOT_MINUTES
+            if schedule_slot_minutes > 0:
+                settings["schedule_slot_minutes"] = schedule_slot_minutes
+
+            schedule_stand_count = _safe_int(
+                raw_settings.get("schedule_stand_count"), DEFAULT_SCHEDULE_STAND_COUNT
+            )
+            settings["schedule_stand_count"] = max(4, schedule_stand_count)
+
+            settings["schedule_end_time"] = _clean_optional_time(
+                raw_settings.get("schedule_end_time")
+            )
     return settings
 
 
@@ -1132,6 +1196,263 @@ def build_metrics_pdf_bytes(metrics: dict[int, list[dict[str, object]]]) -> byte
     doc.build(elements)
     return buffer.getvalue()
 
+def build_start_list_pdf_bytes(competitors: list["Competitor"], competition_name: str) -> bytes:
+    _ensure_pdf_backend()
+    styles = _get_pdf_styles()
+    regular_font, bold_font = _register_pdf_fonts()
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=15 * mm,
+        rightMargin=15 * mm,
+        topMargin=18 * mm,
+        bottomMargin=18 * mm,
+    )
+
+    sorted_competitors = sorted(
+        competitors, key=lambda competitor: (competitor.squad, competitor.number)
+    )
+    elements: list[object] = []
+    title_text = "Lista startowa"
+    elements.append(Paragraph(title_text, styles["title"]))
+    elements.append(Spacer(1, 6))
+
+    if not sorted_competitors:
+        elements.append(Paragraph("Brak zawodników do wyświetlenia.", styles["table_cell_left"]))
+        doc.build(elements)
+        return buffer.getvalue()
+
+    # grupowanie po squad
+    grouped: dict[int, list[Competitor]] = defaultdict(list)
+    for competitor in sorted_competitors:
+        grouped[competitor.squad].append(competitor)
+
+    squad_numbers = sorted(grouped.keys())
+    def build_single_group_table(squad_number: int | None) -> Table:
+        members = grouped.get(squad_number, []) if squad_number is not None else []
+        max_rows = max(len(members), 1)
+
+        header_row = [
+            _paragraph("Grupa", styles["table_header"]),
+            _paragraph("Nr", styles["table_header"]),
+            _paragraph("Nazwisko i imię", styles["table_header"]),
+            _paragraph("Klasa", styles["table_header"]),
+        ]
+        table_data: list[list[object]] = [header_row]
+
+        for row_idx in range(max_rows):
+            if row_idx >= len(members):
+                table_data.append(
+                    [
+                        _paragraph("", styles["table_cell_center"]),
+                        _paragraph("", styles["table_cell_center"]),
+                        _paragraph("", styles["table_cell_left"]),
+                        _paragraph("", styles["table_cell_center"]),
+                    ]
+                )
+                continue
+
+            competitor = members[row_idx]
+            name_combined = f"{_clean_cell_value(competitor.lastname)} {_clean_cell_value(competitor.name)}".strip()
+            table_data.append(
+                [
+                    _paragraph(str(squad_number or ""), styles["table_cell_center"]) if row_idx == 0 else _paragraph("", styles["table_cell_center"]),
+                    _paragraph(_clean_cell_value(competitor.number), styles["table_cell_center"]),
+                    _paragraph(name_combined, styles["table_cell_left"]),
+                    _paragraph(_clean_cell_value(competitor.category), styles["table_cell_center"]),
+                ]
+            )
+
+        base_widths = [14 * mm, 16 * mm, 46 * mm, 18 * mm]
+        base_total = sum(base_widths)
+        target_width = (doc.width - 10 * mm) / 2  # leave space for gap
+        scale = target_width / base_total if base_total else 1
+        column_widths = [width * scale for width in base_widths]
+
+        table = Table(table_data, colWidths=column_widths, repeatRows=1)
+        table_style = TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#f0f0f0")),
+                ("FONTNAME", (0, 0), (-1, 0), bold_font),
+                ("FONTNAME", (0, 1), (-1, -1), regular_font),
+                ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("GRID", (0, 0), (-1, -1), 0.25, rl_colors.lightgrey),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
+            ]
+        )
+
+        if squad_number is not None and members:
+            table_style.add("SPAN", (0, 1), (0, max_rows))
+            table_style.add("ALIGN", (0, 1), (0, max_rows), "CENTER")
+
+        table.setStyle(table_style)
+        return table
+
+    midpoint = (len(squad_numbers) + 1) // 2
+    left_column = squad_numbers[:midpoint]
+    right_column = squad_numbers[midpoint:]
+
+    max_pairs = max(len(left_column), len(right_column))
+    for pair_idx in range(max_pairs):
+        left_squad = left_column[pair_idx] if pair_idx < len(left_column) else None
+        right_squad = right_column[pair_idx] if pair_idx < len(right_column) else None
+
+        left_table = build_single_group_table(left_squad) if left_squad is not None else ""
+        right_table = build_single_group_table(right_squad) if right_squad is not None else ""
+        gap_width = 10 * mm
+        outer = Table(
+            [[left_table, "", right_table]],
+            colWidths=[(doc.width - gap_width) / 2, gap_width, (doc.width - gap_width) / 2],
+        )
+        outer.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("ALIGN", (0, 0), (0, 0), "CENTER"),
+                    ("ALIGN", (2, 0), (2, 0), "CENTER"),
+                ]
+            )
+        )
+        elements.append(outer)
+        elements.append(Spacer(1, 16))
+
+    doc.build(elements)
+    return buffer.getvalue()
+
+def _build_schedule_rows(
+    squads: list[int],
+    start_time: str,
+    slot_minutes: int,
+    stand_count: int,
+    rounds: int = DEFAULT_SCHEDULE_ROUNDS,
+    end_time: str | None = None,
+) -> list[dict[str, object]]:
+    normalized_start = _normalize_time_string(start_time, DEFAULT_SCHEDULE_START_TIME)
+    try:
+        current_time = datetime.strptime(normalized_start, "%H:%M")
+    except ValueError:
+        current_time = datetime.strptime(DEFAULT_SCHEDULE_START_TIME, "%H:%M")
+
+    normalized_end = _clean_optional_time(end_time)
+    end_dt: datetime | None = None
+    if normalized_end:
+        try:
+            end_dt = datetime.strptime(normalized_end, "%H:%M")
+        except ValueError:
+            end_dt = None
+        else:
+            if end_dt < current_time:
+                end_dt = None
+
+    slot_delta = timedelta(minutes=max(1, slot_minutes))
+    stand_count = max(4, stand_count)
+    rounds = max(1, rounds)
+
+    rows: list[dict[str, object]] = []
+
+    if end_dt:
+        max_iterations = 24 * 60  # safety
+        iterations = 0
+        while current_time <= end_dt and iterations < max_iterations:
+            assignments = ["" for _ in range(stand_count)]
+            rows.append({"time": current_time.strftime("%H:%M"), "squads": assignments})
+            current_time += slot_delta
+            iterations += 1
+    else:
+        total_rows = max(1, len(set(squads)) * rounds) if squads else rounds
+        for _ in range(total_rows):
+            assignments = ["" for _ in range(stand_count)]
+            rows.append({"time": current_time.strftime("%H:%M"), "squads": assignments})
+            current_time += slot_delta
+
+    return rows
+
+def build_schedule_pdf_bytes(
+    squads: list[int],
+    start_time: str,
+    slot_minutes: int,
+    stand_count: int,
+    rounds: int,
+    title: str,
+    end_time: str | None,
+) -> bytes:
+    _ensure_pdf_backend()
+    styles = _get_pdf_styles()
+    regular_font, bold_font = _register_pdf_fonts()
+    rows = _build_schedule_rows(squads, start_time, slot_minutes, stand_count, rounds, end_time)
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=15 * mm,
+        rightMargin=15 * mm,
+        topMargin=18 * mm,
+        bottomMargin=18 * mm,
+    )
+
+    elements: list[object] = []
+    normalized_start = _normalize_time_string(start_time, DEFAULT_SCHEDULE_START_TIME)
+    subtitle = f"Start: {normalized_start}"
+    elements.append(Paragraph(_sanitize_pdf_text(title, "Harmonogram"), styles["title"]))
+    if subtitle:
+        elements.append(Paragraph(subtitle, styles["subtitle"]))
+    elements.append(Spacer(1, 6))
+
+    if not rows:
+        elements.append(Paragraph("Brak danych do wygenerowania harmonogramu.", styles["table_cell_left"]))
+        doc.build(elements)
+        return buffer.getvalue()
+
+    header_cells = [_paragraph("Godzina", styles["table_header"])]
+    for idx in range(stand_count):
+        header_cells.append(_paragraph(f"Parkour {idx + 1}", styles["table_header"]))
+    table_data: list[list[object]] = [header_cells]
+
+    for row in rows:
+        assignments = row.get("squads", [])
+        row_cells = [_paragraph(row.get("time", ""), styles["table_cell_center"])]
+        for idx in range(stand_count):
+            value = assignments[idx] if idx < len(assignments) else ""
+            row_cells.append(_paragraph(_clean_cell_value(value), styles["table_cell_center"]))
+        table_data.append(row_cells)
+
+    time_width = 20 * mm
+    if stand_count > 0:
+        remaining = doc.width - time_width
+        stand_width = remaining / stand_count
+        column_widths = [time_width] + [stand_width] * stand_count
+    else:
+        column_widths = [doc.width]
+
+    table = Table(table_data, colWidths=column_widths, repeatRows=1)
+    table_style = TableStyle(
+        [
+            ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#f0f0f0")),
+            ("FONTNAME", (0, 0), (-1, 0), bold_font),
+            ("FONTNAME", (0, 1), (-1, -1), regular_font),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("GRID", (0, 0), (-1, -1), 0.3, rl_colors.lightgrey),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]
+    )
+
+    table.setStyle(table_style)
+    elements.append(table)
+
+    doc.build(elements)
+    return buffer.getvalue()
+
 @app.before_request
 def ensure_auto_backup_worker() -> None:
     ensure_database_ready()
@@ -1214,6 +1535,10 @@ def index():
         order=order,
         default_page_title=DEFAULT_SETTINGS["page_title"],
         page_title=page_title,
+        schedule_start_time=settings.get("schedule_start_time", DEFAULT_SCHEDULE_START_TIME),
+        schedule_slot_minutes=settings.get("schedule_slot_minutes", DEFAULT_SCHEDULE_SLOT_MINUTES),
+        schedule_stand_count=settings.get("schedule_stand_count", DEFAULT_SCHEDULE_STAND_COUNT),
+        schedule_end_time=settings.get("schedule_end_time", DEFAULT_SCHEDULE_END_TIME),
         getattr=getattr,
     )
 
@@ -1450,6 +1775,34 @@ def update_page_title():
 
     return jsonify({"page_title": cleaned_title})
 
+@app.route("/settings/schedule", methods=["POST"])
+def update_schedule_settings():
+    payload = request.get_json(silent=True) or {}
+    settings = load_app_settings()
+    start_time = _normalize_time_string(
+        payload.get("start_time"), settings.get("schedule_start_time", DEFAULT_SCHEDULE_START_TIME)
+    )
+    slot_minutes = _safe_int(
+        payload.get("slot_minutes"), settings.get("schedule_slot_minutes", DEFAULT_SCHEDULE_SLOT_MINUTES)
+    )
+    stand_count = _safe_int(
+        payload.get("stand_count"), settings.get("schedule_stand_count", DEFAULT_SCHEDULE_STAND_COUNT)
+    )
+    settings["schedule_start_time"] = start_time
+    settings["schedule_slot_minutes"] = max(1, slot_minutes)
+    settings["schedule_stand_count"] = max(4, stand_count)
+    settings["schedule_end_time"] = _clean_optional_time(payload.get("end_time"))
+    save_app_settings(settings)
+
+    return jsonify(
+        {
+            "schedule_start_time": settings["schedule_start_time"],
+            "schedule_slot_minutes": settings["schedule_slot_minutes"],
+            "schedule_stand_count": settings["schedule_stand_count"],
+            "schedule_end_time": settings["schedule_end_time"],
+        }
+    )
+
 
 @app.route("/live")
 def live():
@@ -1470,6 +1823,60 @@ def live_data():
     competitors = fetch_competitors(sort, order)
     data = [competitor.to_dict() for competitor in competitors]
     return jsonify(data)
+
+@app.route("/start-list-pdf")
+def export_start_list_pdf():
+    ensure_database_ready()
+    if Competitor.query.count() == 0:
+        return redirect(url_for("initial_setup"))
+
+    settings = load_app_settings()
+    competition_name = settings.get("page_title", DEFAULT_SETTINGS["page_title"])
+    competitors = Competitor.query.order_by(Competitor.squad, Competitor.number).all()
+    pdf = build_start_list_pdf_bytes(competitors, competition_name)
+
+    response = make_response(pdf)
+    response.headers["Content-Type"] = "application/pdf"
+    response.headers["Content-Disposition"] = "attachment; filename=lista_startowa.pdf"
+    return response
+
+@app.route("/schedule-pdf")
+def export_schedule_pdf():
+    ensure_database_ready()
+    if Competitor.query.count() == 0:
+        return redirect(url_for("initial_setup"))
+
+    settings = load_app_settings()
+    competition_name = settings.get("page_title", DEFAULT_SETTINGS["page_title"])
+    start_time_arg = request.args.get("start_time") or settings.get(
+        "schedule_start_time", DEFAULT_SCHEDULE_START_TIME
+    )
+    slot_minutes_arg = request.args.get("slot_minutes")
+    stand_count_arg = request.args.get("stand_count")
+    end_time_arg = request.args.get("end_time") or settings.get("schedule_end_time", DEFAULT_SCHEDULE_END_TIME)
+
+    start_time = _normalize_time_string(start_time_arg, settings.get("schedule_start_time", DEFAULT_SCHEDULE_START_TIME))
+    slot_minutes = _safe_int(slot_minutes_arg, settings.get("schedule_slot_minutes", DEFAULT_SCHEDULE_SLOT_MINUTES))
+    stand_count = _safe_int(stand_count_arg, settings.get("schedule_stand_count", DEFAULT_SCHEDULE_STAND_COUNT))
+    end_time = _clean_optional_time(end_time_arg)
+
+    squad_rows = Competitor.query.with_entities(Competitor.squad).distinct().all()
+    squads = sorted({row[0] for row in squad_rows})
+    safe_competition_name = _sanitize_pdf_text(competition_name, "Zawody")
+    pdf = build_schedule_pdf_bytes(
+        squads,
+        start_time,
+        max(1, slot_minutes),
+        max(4, stand_count),
+        DEFAULT_SCHEDULE_ROUNDS,
+        "Harmonogram",
+        end_time,
+    )
+
+    response = make_response(pdf)
+    response.headers["Content-Type"] = "application/pdf"
+    response.headers["Content-Disposition"] = "attachment; filename=harmonogram.pdf"
+    return response
 
 @app.route("/export-pdf")
 def export_pdf():

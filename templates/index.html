@@ -13,8 +13,8 @@
 
 <div class="d-flex flex-wrap align-items-center gap-2 mb-4">
     <a href="/live" target="_blank" class="btn btn-primary">Tabela wyników (Na żywo)</a>
-    <a href="{{ url_for('export_pdf', sort=sort, order=order) }}" class="btn btn-success">Export tabeli</a>
-    <a href="/metrics-pdf" class="btn btn-secondary">Generacja metryk</a>
+    <a href="{{ url_for('export_pdf', sort=sort, order=order) }}" class="btn btn-success">Export tabeli (PDF)</a>
+    <a href="/metrics-pdf" class="btn btn-secondary">Generacja metryk (PDF)</a>
     <div class="btn-group" role="group" aria-label="Sortowanie kategorii">
         <a href="{{ url_for('index', sort='category_result', order='asc') }}"
            class="btn btn-outline-dark {% if sort == 'category_result' and order != 'desc' %}active{% endif %}">
@@ -35,6 +35,49 @@
         Wyczyść tabelę
     </button>
     <input type="file" id="restore-backup-input" accept=".json,application/json" style="display:none">
+</div>
+
+<div class="card mb-3">
+    <div class="card-body d-flex flex-wrap align-items-end gap-3">
+        <div class="me-2">
+            <label for="schedule-start-time" class="form-label mb-1">Godzina startu (24h)</label>
+            <select class="form-select form-select-sm" id="schedule-start-time">
+                {% for hour in range(5, 22) %}
+                    {% for minute in (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55) %}
+                        {% set option_time = "%02d:%02d" | format(hour, minute) %}
+                        <option value="{{ option_time }}" {% if schedule_start_time == option_time %}selected{% endif %}>{{ option_time }}</option>
+                    {% endfor %}
+                {% endfor %}
+            </select>
+        </div>
+        <div class="me-2">
+            <label for="schedule-slot-minutes" class="form-label mb-1">Czas na konkurencję (min)</label>
+            <select class="form-select form-select-sm" id="schedule-slot-minutes">
+                {% for minutes in (5,10,15,20,25,30,35,40,45,50,55,60) %}
+                    <option value="{{ minutes }}" {% if schedule_slot_minutes == minutes %}selected{% endif %}>{{ minutes }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="me-2">
+            <label for="schedule-end-time" class="form-label mb-1">Godzina końca (opcjonalnie)</label>
+            <select class="form-select form-select-sm" id="schedule-end-time">
+                <option value=""></option>
+                {% for hour in range(5, 22) %}
+                    {% for minute in (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55) %}
+                        {% set option_time = "%02d:%02d" | format(hour, minute) %}
+                        <option value="{{ option_time }}" {% if schedule_end_time == option_time %}selected{% endif %}>{{ option_time }}</option>
+                    {% endfor %}
+                {% endfor %}
+            </select>
+        </div>
+        <button type="button" class="btn btn-outline-info" id="schedule-pdf-button">
+            Harmonogram (PDF)
+        </button>
+        <button type="button" class="btn btn-outline-primary" id="start-list-pdf-button">
+            Lista startowa (PDF)
+        </button>
+        <small class="text-muted">Ustawienia zapisują się automatycznie.</small>
+    </div>
 </div>
 
 <div id="dev-tools" class="card border-secondary mb-4 d-none">
@@ -273,6 +316,76 @@ document.addEventListener("DOMContentLoaded", () => {
         devToggle.addEventListener("change", syncDevMenuState);
     }
     syncDevMenuState();
+
+    const scheduleStartInput = document.getElementById("schedule-start-time");
+    const scheduleSlotInput = document.getElementById("schedule-slot-minutes");
+    const scheduleEndInput = document.getElementById("schedule-end-time");
+    const scheduleButton = document.getElementById("schedule-pdf-button");
+    const startListButton = document.getElementById("start-list-pdf-button");
+    const scheduleStandCount = {{ schedule_stand_count|default(3) }};
+
+    const persistScheduleSettings = () => {
+        if (!scheduleStartInput || !scheduleSlotInput) {
+            return Promise.resolve();
+        }
+        const payload = {
+            start_time: scheduleStartInput.value,
+            slot_minutes: scheduleSlotInput.value,
+            stand_count: scheduleStandCount,
+            end_time: scheduleEndInput ? scheduleEndInput.value : "",
+        };
+        return fetch("/settings/schedule", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+        }).catch(() => {});
+    };
+
+    const openSchedulePdf = () => {
+        const params = new URLSearchParams();
+        if (scheduleStartInput && scheduleStartInput.value) {
+            params.set("start_time", scheduleStartInput.value);
+        }
+        if (scheduleSlotInput && scheduleSlotInput.value) {
+            params.set("slot_minutes", scheduleSlotInput.value);
+        }
+        if (scheduleEndInput && scheduleEndInput.value) {
+            params.set("end_time", scheduleEndInput.value);
+        }
+        const query = params.toString();
+        window.location.href = query ? `/schedule-pdf?${query}` : "/schedule-pdf";
+    };
+
+    if (scheduleStartInput) {
+        scheduleStartInput.addEventListener("change", () => {
+            persistScheduleSettings();
+        });
+    }
+    if (scheduleSlotInput) {
+        scheduleSlotInput.addEventListener("change", () => {
+            persistScheduleSettings();
+        });
+    }
+    if (scheduleEndInput) {
+        scheduleEndInput.addEventListener("change", () => {
+            persistScheduleSettings();
+        });
+    }
+    if (scheduleButton) {
+        scheduleButton.addEventListener("click", () => {
+            persistScheduleSettings().finally(() => {
+                openSchedulePdf();
+            });
+        });
+    }
+    if (startListButton) {
+        startListButton.addEventListener("click", () => {
+            persistScheduleSettings();
+            window.location.href = "/start-list-pdf";
+        });
+    }
 
     if (populateButton) {
         populateButton.addEventListener("click", () => {
