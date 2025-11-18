@@ -883,23 +883,17 @@ def build_results_pdf_bytes(competitors: list[Competitor], sort: str, order: str
     category_groups: dict[str, list[Competitor]] = defaultdict(list)
     competitor_categories: dict[int, str] = {}
     for competitor in competitors:
-        category = competitor.category or UNCATEGORIZED_LABEL
-        category_groups[category].append(competitor)
-        competitor_categories[competitor.id] = category
+        category_value = (competitor.category or "").strip()
+        if not category_value or category_value == "-":
+            continue
+        category_groups[category_value].append(competitor)
+        competitor_categories[competitor.id] = category_value
 
     rank_map: dict[int, int] = {}
     for category, members in category_groups.items():
         ranked_members = sorted(members, key=lambda competitor: competitor.result, reverse=True)
         for position, competitor in enumerate(ranked_members[:3], start=1):
             rank_map[competitor.id] = position
-
-    category_colors = generate_category_rank_colors(category_groups.keys())
-    highlight_styles: dict[int, str] = {}
-    for competitor_id, rank in rank_map.items():
-        category = competitor_categories.get(competitor_id, UNCATEGORIZED_LABEL)
-        color = category_colors.get(category, {}).get(rank)
-        if color:
-            highlight_styles[competitor_id] = color
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(
@@ -928,6 +922,7 @@ def build_results_pdf_bytes(competitors: list[Competitor], sort: str, order: str
 
     table_data: list[list[object]] = []
     header_row = [_paragraph(column["label"], styles["table_header"]) for column in COLUMNS]
+    header_row.append(_paragraph("M-ce kat.", styles["table_header"]))
     table_data.append(header_row)
 
     for competitor in competitors:
@@ -941,6 +936,9 @@ def build_results_pdf_bytes(competitors: list[Competitor], sort: str, order: str
             else:
                 style = styles["table_cell_center"]
             row_cells.append(_paragraph(text_value, style))
+        rank_value = rank_map.get(competitor.id)
+        rank_display = str(rank_value) if rank_value in (1, 2, 3) else ""
+        row_cells.append(_paragraph(rank_display, styles["table_cell_center"]))
         table_data.append(row_cells)
 
     column_widths: list[float] = []
@@ -962,6 +960,7 @@ def build_results_pdf_bytes(competitors: list[Competitor], sort: str, order: str
             column_widths.append(20 * mm)
         else:
             column_widths.append(17 * mm)
+    column_widths.append(16 * mm)
 
     total_width = sum(column_widths)
     if total_width > doc.width:
@@ -990,11 +989,6 @@ def build_results_pdf_bytes(competitors: list[Competitor], sort: str, order: str
     for idx, column in enumerate(COLUMNS):
         if column["name"] in {"name", "lastname", "category"}:
             table_style.add("ALIGN", (idx, 1), (idx, -1), "LEFT")
-
-    for row_index, competitor in enumerate(competitors, start=1):
-        color_hex = highlight_styles.get(competitor.id)
-        if color_hex:
-            table_style.add("BACKGROUND", (0, row_index), (-1, row_index), rl_colors.HexColor(color_hex))
 
     table.setStyle(table_style)
     elements.append(table)
