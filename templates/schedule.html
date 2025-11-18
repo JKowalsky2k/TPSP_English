@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>Harmonogram</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="{{ url_for('static', filename='index.css') }}" rel="stylesheet">
+<style>
+    #schedule-table td.active-cell {
+        outline: 2px solid #0d6efd;
+        outline-offset: -2px;
+        background-color: #e7f1ff;
+    }
+    #schedule-table tbody tr:hover,
+    #schedule-table tbody tr:hover td {
+        background-color: transparent !important;
+    }
+</style>
+</head>
+<body class="bg-light p-4">
+
+<div class="d-flex flex-wrap align-items-center gap-3 mb-3">
+    <div>
+        <h1 class="mb-1">Harmonogram</h1>
+        <div class="text-muted">{{ competition_name }}</div>
+    </div>
+    <div class="ms-auto d-flex gap-2">
+        <a href="/" class="btn btn-outline-secondary">← Wróć do tabeli</a>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body row g-3 align-items-end">
+        <div class="col-sm-3">
+            <label for="schedule-start-time" class="form-label mb-1">Godzina startu (24h)</label>
+            <select class="form-select form-select-sm" id="schedule-start-time">
+                {% for hour in range(5, 22) %}
+                    {% for minute in (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55) %}
+                        {% set option_time = "%02d:%02d" | format(hour, minute) %}
+                        <option value="{{ option_time }}" {% if schedule_start_time == option_time %}selected{% endif %}>{{ option_time }}</option>
+                    {% endfor %}
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-sm-3">
+            <label for="schedule-slot-minutes" class="form-label mb-1">Czas na konkurencję (min)</label>
+            <select class="form-select form-select-sm" id="schedule-slot-minutes">
+                {% for minutes in (5,10,15,20,25,30,35,40,45,50,55,60) %}
+                    <option value="{{ minutes }}" {% if schedule_slot_minutes == minutes %}selected{% endif %}>{{ minutes }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-sm-3">
+            <label for="schedule-end-time" class="form-label mb-1">Godzina końca (opcjonalnie)</label>
+            <select class="form-select form-select-sm" id="schedule-end-time">
+                <option value=""></option>
+                {% for hour in range(5, 22) %}
+                    {% for minute in (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55) %}
+                        {% set option_time = "%02d:%02d" | format(hour, minute) %}
+                        <option value="{{ option_time }}" {% if schedule_end_time == option_time %}selected{% endif %}>{{ option_time }}</option>
+                    {% endfor %}
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-sm-3 text-sm-end">
+            <small class="text-muted d-block mb-1">Ustawienia zapisują się automatycznie.</small>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <div class="d-flex flex-wrap align-items-center justify-content-between mb-3 gap-2">
+            <div>
+                <h5 class="mb-1">Tabela przydziałów grup</h5>
+                <small class="text-muted">Uzupełnij ręcznie numery grup, potem wygeneruj harmonogram PDF.</small>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+                <button type="button" id="clear-assignments-button" class="btn btn-outline-danger btn-sm">Wyczyść wpisy</button>
+                <button type="button" id="generate-pdf-button" class="btn btn-primary">Generuj PDF</button>
+            </div>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-bordered align-middle text-center" id="schedule-table">
+                <thead class="table-light">
+                <tr>
+                    <th class="text-nowrap">Godzina</th>
+                    {% for idx in range(schedule_stand_count) %}
+                        <th>Parkour {{ idx + 1 }}</th>
+                    {% endfor %}
+                </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+    const scheduleStartInput = document.getElementById("schedule-start-time");
+    const scheduleSlotInput = document.getElementById("schedule-slot-minutes");
+    const scheduleEndInput = document.getElementById("schedule-end-time");
+    const scheduleStandCount = {{ schedule_stand_count|default(4) }};
+    const defaultRounds = {{ default_rounds|default(2) }};
+    const initialRows = {{ schedule_rows|tojson }};
+    const tableBody = document.querySelector("#schedule-table tbody");
+    const clearAssignmentsButton = document.getElementById("clear-assignments-button");
+    const generatePdfButton = document.getElementById("generate-pdf-button");
+    let activeCell = null;
+
+    const defaultStartTime = "{{ schedule_start_time }}";
+    const defaultSlotMinutes = {{ schedule_slot_minutes|default(20) }};
+
+    const persistScheduleSettings = () => {
+        if (!scheduleStartInput || !scheduleSlotInput) {
+            return Promise.resolve();
+        }
+        const payload = {
+            start_time: scheduleStartInput.value,
+            slot_minutes: scheduleSlotInput.value,
+            stand_count: scheduleStandCount,
+            end_time: scheduleEndInput ? scheduleEndInput.value : "",
+        };
+        return fetch("/settings/schedule", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+        }).catch(() => {});
+    };
+
+    const parseTimeToMinutes = (value) => {
+        if (!value) {
+            return null;
+        }
+        const match = String(value).trim().match(/^(\d{1,2}):(\d{2})$/);
+        if (!match) {
+            return null;
+        }
+        const hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        if (Number.isNaN(hours) || Number.isNaN(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+            return null;
+        }
+        return hours * 60 + minutes;
+    };
+
+    const formatMinutesToTime = (totalMinutes) => {
+        const normalized = ((totalMinutes % (24 * 60)) + (24 * 60)) % (24 * 60);
+        const hours = Math.floor(normalized / 60);
+        const minutes = normalized % 60;
+        return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}`;
+    };
+
+    const padAssignments = (assignments) => {
+        const safe = Array.isArray(assignments) ? assignments.slice(0, scheduleStandCount) : [];
+        while (safe.length < scheduleStandCount) {
+            safe.push("");
+        }
+        return safe;
+    };
+
+    const baseRowCount = Array.isArray(initialRows) && initialRows.length > 0 ? initialRows.length : defaultRounds;
+    let currentRows = Array.isArray(initialRows) && initialRows.length
+        ? initialRows.map((row) => ({
+            time: row && row.time ? row.time : "",
+            squads: padAssignments(row && row.squads ? row.squads : []),
+        }))
+        : [];
+
+    const clearActiveCell = () => {
+        if (activeCell) {
+            activeCell.classList.remove("active-cell");
+            activeCell = null;
+        }
+    };
+
+    const setActiveCell = (td) => {
+        if (!td) {
+            clearActiveCell();
+            return;
+        }
+        if (activeCell && activeCell !== td) {
+            activeCell.classList.remove("active-cell");
+        }
+        activeCell = td;
+        td.classList.add("active-cell");
+    };
+
+    const focusCell = (rowIdx, colIdx) => {
+        if (!tableBody) {
+            return;
+        }
+        const rows = tableBody.querySelectorAll("tr");
+        const targetRow = rows[rowIdx];
+        if (!targetRow) {
+            return;
+        }
+        const inputs = targetRow.querySelectorAll("input");
+        const targetInput = inputs[colIdx];
+        if (!targetInput) {
+            return;
+        }
+        targetInput.focus();
+        targetInput.select();
+        targetInput.dataset.replaceMode = "1";
+        const td = targetInput.closest("td");
+        if (td) {
+            setActiveCell(td);
+        }
+    };
+
+    const handleInputKeyDown = (event) => {
+        const input = event.target;
+        if (!(input instanceof HTMLInputElement)) {
+            return;
+        }
+        const td = input.closest("td");
+        if (td) {
+            setActiveCell(td);
+        }
+        const rowIndex = parseInt(input.dataset.row || "-1", 10);
+        const colIndex = parseInt(input.dataset.col || "-1", 10);
+        const key = event.key;
+
+        if (key === "ArrowLeft") {
+            event.preventDefault();
+            focusCell(rowIndex, Math.max(0, colIndex - 1));
+            return;
+        }
+        if (key === "ArrowRight") {
+            event.preventDefault();
+            focusCell(rowIndex, colIndex + 1);
+            return;
+        }
+        if (key === "ArrowUp") {
+            event.preventDefault();
+            focusCell(Math.max(0, rowIndex - 1), colIndex);
+            return;
+        }
+        if (key === "ArrowDown") {
+            event.preventDefault();
+            focusCell(rowIndex + 1, colIndex);
+            return;
+        }
+
+        const isCharacterKey = key && key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey;
+        if (isCharacterKey && input.dataset.replaceMode === "1") {
+            input.value = key;
+            input.dataset.replaceMode = "0";
+            event.preventDefault();
+            return;
+        }
+        if (isCharacterKey) {
+            input.dataset.replaceMode = "0";
+        }
+    };
+
+    const handleInputFocus = (event) => {
+        const td = event.target.closest("td");
+        if (td) {
+            setActiveCell(td);
+        }
+        if (event.target instanceof HTMLInputElement) {
+            event.target.select();
+            event.target.dataset.replaceMode = "1";
+        }
+    };
+
+    const handleInputBlur = () => {
+        clearActiveCell();
+    };
+
+    const renderTable = () => {
+        if (!tableBody) {
+            return;
+        }
+        tableBody.innerHTML = "";
+        currentRows.forEach((row, rowIdx) => {
+            const tr = document.createElement("tr");
+            const timeCell = document.createElement("td");
+            timeCell.className = "text-nowrap fw-semibold";
+            timeCell.textContent = row.time || "";
+            timeCell.dataset.timeValue = row.time || "";
+            tr.appendChild(timeCell);
+
+            const assignments = padAssignments(row.squads);
+            assignments.forEach((value, colIdx) => {
+                const td = document.createElement("td");
+                const input = document.createElement("input");
+                input.type = "text";
+                input.inputMode = "numeric";
+                input.className = "form-control form-control-sm text-center";
+                input.value = value || "";
+                input.dataset.row = String(rowIdx);
+                input.dataset.col = String(colIdx);
+                input.addEventListener("keydown", handleInputKeyDown);
+                input.addEventListener("focus", handleInputFocus);
+                input.addEventListener("blur", handleInputBlur);
+                td.appendChild(input);
+                tr.appendChild(td);
+            });
+
+            tableBody.appendChild(tr);
+        });
+    };
+
+    const readAssignmentsFromDom = () => {
+        if (!tableBody) {
+            return [];
+        }
+        return Array.from(tableBody.querySelectorAll("tr")).map((row) => {
+            const inputs = Array.from(row.querySelectorAll("input"));
+            return inputs.map((input) => input.value.trim());
+        });
+    };
+
+    const rebuildRows = () => {
+        const existingAssignments = readAssignmentsFromDom();
+        const startMinutes = parseTimeToMinutes(scheduleStartInput ? scheduleStartInput.value : null)
+            ?? parseTimeToMinutes(defaultStartTime)
+            ?? 0;
+        const rawSlot = scheduleSlotInput ? parseInt(scheduleSlotInput.value, 10) : defaultSlotMinutes;
+        const slotMinutes = Math.max(1, Number.isNaN(rawSlot) ? defaultSlotMinutes : rawSlot);
+        const endMinutes = scheduleEndInput ? parseTimeToMinutes(scheduleEndInput.value) : null;
+
+        const rows = [];
+        let current = startMinutes;
+        if (endMinutes !== null) {
+            let guard = 0;
+            while (current <= endMinutes && guard < 24 * 60) {
+                rows.push({ time: formatMinutesToTime(current) });
+                current += slotMinutes;
+                guard += 1;
+            }
+        } else {
+            const targetRows = Math.max(baseRowCount, currentRows.length || 0, defaultRounds);
+            for (let idx = 0; idx < targetRows; idx += 1) {
+                rows.push({ time: formatMinutesToTime(current) });
+                current += slotMinutes;
+            }
+        }
+
+        currentRows = rows.map((row, idx) => ({
+            time: row.time,
+            squads: padAssignments(existingAssignments[idx]),
+        }));
+        renderTable();
+    };
+
+    const clearAssignments = () => {
+        if (!tableBody) {
+            return;
+        }
+        tableBody.querySelectorAll("input").forEach((input) => {
+            input.value = "";
+        });
+        currentRows = currentRows.map((row) => ({ ...row, squads: padAssignments([]) }));
+    };
+
+    const readRowsForPayload = () => {
+        if (!tableBody) {
+            return [];
+        }
+        return Array.from(tableBody.querySelectorAll("tr")).map((row) => {
+            const timeValue = row.querySelector("td")?.dataset?.timeValue || "";
+            const entries = Array.from(row.querySelectorAll("input")).map((input) => input.value.trim());
+            return { time: timeValue, squads: padAssignments(entries) };
+        });
+    };
+
+    if (scheduleStartInput) {
+        scheduleStartInput.addEventListener("change", () => {
+            persistScheduleSettings();
+            rebuildRows();
+        });
+    }
+    if (scheduleSlotInput) {
+        scheduleSlotInput.addEventListener("change", () => {
+            persistScheduleSettings();
+            rebuildRows();
+        });
+    }
+    if (scheduleEndInput) {
+        scheduleEndInput.addEventListener("change", () => {
+            persistScheduleSettings();
+            rebuildRows();
+        });
+    }
+    if (clearAssignmentsButton) {
+        clearAssignmentsButton.addEventListener("click", () => {
+            clearAssignments();
+        });
+    }
+    if (generatePdfButton) {
+        generatePdfButton.addEventListener("click", async () => {
+            generatePdfButton.disabled = true;
+            await persistScheduleSettings();
+            const rows = readRowsForPayload();
+            try {
+                const response = await fetch("/schedule-pdf", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        start_time: scheduleStartInput ? scheduleStartInput.value : defaultStartTime,
+                        slot_minutes: scheduleSlotInput ? scheduleSlotInput.value : defaultSlotMinutes,
+                        stand_count: scheduleStandCount,
+                        end_time: scheduleEndInput ? scheduleEndInput.value : "",
+                        rows,
+                        title: "Harmonogram",
+                    }),
+                });
+                if (!response.ok) {
+                    throw new Error("Nie udało się wygenerować PDF.");
+                }
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = "harmonogram.pdf";
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                setTimeout(() => URL.revokeObjectURL(url), 300);
+            } catch (error) {
+                alert(error && error.message ? error.message : "Nie udało się wygenerować harmonogramu.");
+            } finally {
+                generatePdfButton.disabled = false;
+            }
+        });
+    }
+
+    if (!currentRows.length) {
+        rebuildRows();
+    }
+    renderTable();
+</script>
+</body>
+</html>

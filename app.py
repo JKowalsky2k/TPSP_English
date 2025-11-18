@@ -1370,11 +1370,12 @@ def build_schedule_pdf_bytes(
     rounds: int,
     title: str,
     end_time: str | None,
+    rows: list[dict[str, object]] | None = None,
 ) -> bytes:
     _ensure_pdf_backend()
     styles = _get_pdf_styles()
     regular_font, bold_font = _register_pdf_fonts()
-    rows = _build_schedule_rows(squads, start_time, slot_minutes, stand_count, rounds, end_time)
+    rows = rows if rows is not None else _build_schedule_rows(squads, start_time, slot_minutes, stand_count, rounds, end_time)
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(
@@ -1813,6 +1814,40 @@ def live_data():
     data = [competitor.to_dict() for competitor in competitors]
     return jsonify(data)
 
+@app.route("/schedule")
+def schedule_builder_view():
+    ensure_database_ready()
+    if Competitor.query.count() == 0:
+        return redirect(url_for("initial_setup"))
+
+    settings = load_app_settings()
+    start_time = _normalize_time_string(
+        settings.get("schedule_start_time", DEFAULT_SCHEDULE_START_TIME), DEFAULT_SCHEDULE_START_TIME
+    )
+    slot_minutes = _safe_int(
+        settings.get("schedule_slot_minutes", DEFAULT_SCHEDULE_SLOT_MINUTES), DEFAULT_SCHEDULE_SLOT_MINUTES
+    )
+    stand_count = max(4, _safe_int(settings.get("schedule_stand_count"), DEFAULT_SCHEDULE_STAND_COUNT))
+    end_time = _clean_optional_time(settings.get("schedule_end_time", DEFAULT_SCHEDULE_END_TIME))
+
+    squad_rows = Competitor.query.with_entities(Competitor.squad).distinct().all()
+    squads = sorted({row[0] for row in squad_rows})
+    schedule_rows = _build_schedule_rows(
+        squads, start_time, slot_minutes, stand_count, DEFAULT_SCHEDULE_ROUNDS, end_time
+    )
+    competition_name = settings.get("page_title", DEFAULT_SETTINGS["page_title"])
+
+    return render_template(
+        "schedule.html",
+        schedule_start_time=start_time,
+        schedule_slot_minutes=slot_minutes,
+        schedule_stand_count=stand_count,
+        schedule_end_time=end_time,
+        schedule_rows=schedule_rows,
+        competition_name=competition_name,
+        default_rounds=DEFAULT_SCHEDULE_ROUNDS,
+    )
+
 @app.route("/start-list-pdf")
 def export_start_list_pdf():
     ensure_database_ready()
@@ -1829,7 +1864,7 @@ def export_start_list_pdf():
     response.headers["Content-Disposition"] = "attachment; filename=lista_startowa.pdf"
     return response
 
-@app.route("/schedule-pdf")
+@app.route("/schedule-pdf", methods=["GET", "POST"])
 def export_schedule_pdf():
     ensure_database_ready()
     if Competitor.query.count() == 0:
@@ -1837,30 +1872,71 @@ def export_schedule_pdf():
 
     settings = load_app_settings()
     competition_name = settings.get("page_title", DEFAULT_SETTINGS["page_title"])
-    start_time_arg = request.args.get("start_time") or settings.get(
-        "schedule_start_time", DEFAULT_SCHEDULE_START_TIME
-    )
-    slot_minutes_arg = request.args.get("slot_minutes")
-    stand_count_arg = request.args.get("stand_count")
-    end_time_arg = request.args.get("end_time") or settings.get("schedule_end_time", DEFAULT_SCHEDULE_END_TIME)
+    if request.method == "POST" and request.is_json:
+        payload = request.get_json(silent=True) or {}
+        start_time = _normalize_time_string(
+            payload.get("start_time"), settings.get("schedule_start_time", DEFAULT_SCHEDULE_START_TIME)
+        )
+        slot_minutes = _safe_int(
+            payload.get("slot_minutes"), settings.get("schedule_slot_minutes", DEFAULT_SCHEDULE_SLOT_MINUTES)
+        )
+        stand_count = _safe_int(
+            payload.get("stand_count"), settings.get("schedule_stand_count", DEFAULT_SCHEDULE_STAND_COUNT)
+        )
+        end_time = _clean_optional_time(payload.get("end_time")) or _clean_optional_time(
+            settings.get("schedule_end_time", DEFAULT_SCHEDULE_END_TIME)
+        )
+        raw_rows = payload.get("rows")
+        cleaned_rows: list[dict[str, object]] = []
+        if isinstance(raw_rows, list):
+            for row in raw_rows:
+                if not isinstance(row, dict):
+                    continue
+                time_value = _normalize_time_string(row.get("time"), start_time)
+                squad_values = row.get("squads", [])
+                if isinstance(squad_values, list):
+                    assignments = [str(value or "").strip() for value in squad_values]
+                else:
+                    assignments = []
+                cleaned_rows.append({"time": time_value, "squads": assignments})
+        max_assignments = max((len(row.get("squads", [])) for row in cleaned_rows), default=stand_count)
+        effective_stand_count = max(4, stand_count, max_assignments)
+        safe_title = _sanitize_pdf_text(payload.get("title"), "Harmonogram")
+        pdf = build_schedule_pdf_bytes(
+            [],
+            start_time,
+            max(1, slot_minutes),
+            effective_stand_count,
+            DEFAULT_SCHEDULE_ROUNDS,
+            safe_title or "Harmonogram",
+            end_time,
+            rows=cleaned_rows if cleaned_rows else None,
+        )
+    else:
+        start_time_arg = request.args.get("start_time") or settings.get(
+            "schedule_start_time", DEFAULT_SCHEDULE_START_TIME
+        )
+        slot_minutes_arg = request.args.get("slot_minutes")
+        stand_count_arg = request.args.get("stand_count")
+        end_time_arg = request.args.get("end_time") or settings.get("schedule_end_time", DEFAULT_SCHEDULE_END_TIME)
 
-    start_time = _normalize_time_string(start_time_arg, settings.get("schedule_start_time", DEFAULT_SCHEDULE_START_TIME))
-    slot_minutes = _safe_int(slot_minutes_arg, settings.get("schedule_slot_minutes", DEFAULT_SCHEDULE_SLOT_MINUTES))
-    stand_count = _safe_int(stand_count_arg, settings.get("schedule_stand_count", DEFAULT_SCHEDULE_STAND_COUNT))
-    end_time = _clean_optional_time(end_time_arg)
+        start_time = _normalize_time_string(start_time_arg, settings.get("schedule_start_time", DEFAULT_SCHEDULE_START_TIME))
+        slot_minutes = _safe_int(slot_minutes_arg, settings.get("schedule_slot_minutes", DEFAULT_SCHEDULE_SLOT_MINUTES))
+        stand_count = _safe_int(stand_count_arg, settings.get("schedule_stand_count", DEFAULT_SCHEDULE_STAND_COUNT))
+        end_time = _clean_optional_time(end_time_arg)
 
-    squad_rows = Competitor.query.with_entities(Competitor.squad).distinct().all()
-    squads = sorted({row[0] for row in squad_rows})
-    safe_competition_name = _sanitize_pdf_text(competition_name, "Zawody")
-    pdf = build_schedule_pdf_bytes(
-        squads,
-        start_time,
-        max(1, slot_minutes),
-        max(4, stand_count),
-        DEFAULT_SCHEDULE_ROUNDS,
-        "Harmonogram",
-        end_time,
-    )
+        squad_rows = Competitor.query.with_entities(Competitor.squad).distinct().all()
+        squads = sorted({row[0] for row in squad_rows})
+        safe_competition_name = _sanitize_pdf_text(competition_name, "Zawody")
+        pdf = build_schedule_pdf_bytes(
+            squads,
+            start_time,
+            max(1, slot_minutes),
+            max(4, stand_count),
+            DEFAULT_SCHEDULE_ROUNDS,
+            "Harmonogram",
+            end_time,
+        )
 
     response = make_response(pdf)
     response.headers["Content-Type"] = "application/pdf"
