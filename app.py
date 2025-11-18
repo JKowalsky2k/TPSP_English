@@ -1294,14 +1294,9 @@ def build_start_list_pdf_bytes(competitors: list["Competitor"], competition_name
         table.setStyle(table_style)
         return table
 
-    midpoint = (len(squad_numbers) + 1) // 2
-    left_column = squad_numbers[:midpoint]
-    right_column = squad_numbers[midpoint:]
-
-    max_pairs = max(len(left_column), len(right_column))
-    for pair_idx in range(max_pairs):
-        left_squad = left_column[pair_idx] if pair_idx < len(left_column) else None
-        right_squad = right_column[pair_idx] if pair_idx < len(right_column) else None
+    for pair_idx in range(0, len(squad_numbers), 2):
+        left_squad = squad_numbers[pair_idx] if pair_idx < len(squad_numbers) else None
+        right_squad = squad_numbers[pair_idx + 1] if (pair_idx + 1) < len(squad_numbers) else None
 
         left_table = build_single_group_table(left_squad) if left_squad is not None else ""
         right_table = build_single_group_table(right_squad) if right_squad is not None else ""

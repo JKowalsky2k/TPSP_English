@@ -122,7 +122,7 @@
     {% set current_category = getattr(z, col.name) %}
 <td class="{{ td_class }}" data-grid-cell tabindex="-1">
     <select class="form-select form-select-sm category-select"
-    data-default-value="{{ allowed_categories|first }}"
+    data-default-value=""
     data-persisted-value="{{ current_category or '' }}"
     @change="
         fetch('/update',{
@@ -181,6 +181,7 @@
             const g = parseInt(res.squad) || 1;
             row.className = (g%2==0)?'group-even':'group-odd';
         })">
+        <option value="" {% if not current_category %}selected{% endif %}>-</option>
         {% if current_category and current_category not in allowed_categories %}
         <option value="{{ current_category }}" selected>{{ current_category }}</option>
         {% endif %}
