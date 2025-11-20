@@ -76,8 +76,8 @@
                 <small class="text-muted">Uzupełnij ręcznie numery grup, potem wygeneruj harmonogram PDF.</small>
             </div>
             <div class="d-flex flex-wrap gap-2">
-                <button type="button" id="clear-assignments-button" class="btn btn-outline-danger btn-sm">Wyczyść wpisy</button>
-                <button type="button" id="generate-pdf-button" class="btn btn-primary">Generuj PDF</button>
+                <button type="button" id="generate-pdf-button" class="btn btn-outline-purple">Generuj PDF</button>
+                <button type="button" id="clear-assignments-button" class="btn btn-danger btn-sm">Wyczyść wpisy</button>
             </div>
         </div>
         <div class="table-responsive">
@@ -107,6 +107,8 @@
     const clearAssignmentsButton = document.getElementById("clear-assignments-button");
     const generatePdfButton = document.getElementById("generate-pdf-button");
     let activeCell = null;
+    let rowsSaveTimeoutId = null;
+    const ROWS_SAVE_DEBOUNCE_MS = 400;
 
     const defaultStartTime = "{{ schedule_start_time }}";
     const defaultSlotMinutes = {{ schedule_slot_minutes|default(20) }};
@@ -128,6 +130,53 @@
             },
             body: JSON.stringify(payload),
         }).catch(() => {});
+    };
+
+    const persistScheduleRows = (rowsOverride = null) => {
+        if (!tableBody) {
+            return Promise.resolve();
+        }
+        const payloadRows = Array.isArray(rowsOverride) ? rowsOverride : readRowsForPayload();
+        return fetch("/schedule/rows", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                rows: payloadRows,
+            }),
+        }).catch(() => {});
+    };
+
+    const requestScheduleRowsSave = () => {
+        if (rowsSaveTimeoutId) {
+            clearTimeout(rowsSaveTimeoutId);
+        }
+        rowsSaveTimeoutId = window.setTimeout(() => {
+            rowsSaveTimeoutId = null;
+            persistScheduleRows();
+        }, ROWS_SAVE_DEBOUNCE_MS);
+    };
+
+    const flushScheduleRowsSave = () => {
+        if (!tableBody) {
+            return;
+        }
+        if (rowsSaveTimeoutId) {
+            clearTimeout(rowsSaveTimeoutId);
+            rowsSaveTimeoutId = null;
+        }
+        const rows = readRowsForPayload();
+        if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+            try {
+                const blob = new Blob([JSON.stringify({ rows })], { type: "application/json" });
+                navigator.sendBeacon("/schedule/rows", blob);
+                return;
+            } catch (error) {
+                // Fallback to fetch below
+            }
+        }
+        persistScheduleRows(rows);
     };
 
     const parseTimeToMinutes = (value) => {
@@ -272,6 +321,10 @@
         clearActiveCell();
     };
 
+    const handleInputChange = () => {
+        requestScheduleRowsSave();
+    };
+
     const renderTable = () => {
         if (!tableBody) {
             return;
@@ -298,6 +351,7 @@
                 input.addEventListener("keydown", handleInputKeyDown);
                 input.addEventListener("focus", handleInputFocus);
                 input.addEventListener("blur", handleInputBlur);
+                input.addEventListener("input", handleInputChange);
                 td.appendChild(input);
                 tr.appendChild(td);
             });
@@ -357,6 +411,7 @@
             input.value = "";
         });
         currentRows = currentRows.map((row) => ({ ...row, squads: padAssignments([]) }));
+        requestScheduleRowsSave();
     };
 
     const readRowsForPayload = () => {
@@ -374,18 +429,21 @@
         scheduleStartInput.addEventListener("change", () => {
             persistScheduleSettings();
             rebuildRows();
+            requestScheduleRowsSave();
         });
     }
     if (scheduleSlotInput) {
         scheduleSlotInput.addEventListener("change", () => {
             persistScheduleSettings();
             rebuildRows();
+            requestScheduleRowsSave();
         });
     }
     if (scheduleEndInput) {
         scheduleEndInput.addEventListener("change", () => {
             persistScheduleSettings();
             rebuildRows();
+            requestScheduleRowsSave();
         });
     }
     if (clearAssignmentsButton) {
@@ -398,6 +456,7 @@
             generatePdfButton.disabled = true;
             await persistScheduleSettings();
             const rows = readRowsForPayload();
+            await persistScheduleRows(rows);
             try {
                 const response = await fetch("/schedule-pdf", {
                     method: "POST",
@@ -437,6 +496,14 @@
         rebuildRows();
     }
     renderTable();
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") {
+            flushScheduleRowsSave();
+        }
+    });
+    window.addEventListener("beforeunload", () => {
+        flushScheduleRowsSave();
+    });
 </script>
 </body>
 </html>

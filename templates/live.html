@@ -11,10 +11,10 @@
 <h1 class="mb-4">📊 Podgląd tabeli (Live)</h1>
 
 <div class="d-flex flex-wrap align-items-center gap-2 mb-4">
-  <button type="button" class="btn btn-primary active" data-mode="standard">
+  <button type="button" class="btn btn-outline-orange active" data-mode="standard">
     Tryb standardowy
   </button>
-  <button type="button" class="btn btn-outline-dark" data-mode="category">
+  <button type="button" class="btn btn-outline-orange" data-mode="category">
     Kategorie A→Z, wynik malejąco
   </button>
 </div>
@@ -89,13 +89,7 @@ function updateModeButtons(mode) {
   modeButtons.forEach(button => {
     const isActive = button.dataset.mode === mode;
     button.classList.toggle("active", isActive);
-    if (isActive) {
-      button.classList.add("btn-primary");
-      button.classList.remove("btn-outline-dark");
-    } else {
-      button.classList.remove("btn-primary");
-      button.classList.add("btn-outline-dark");
-    }
+    button.setAttribute("aria-pressed", isActive ? "true" : "false");
   });
 }
 

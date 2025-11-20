@@ -56,3 +56,23 @@ td.max-score {
     top: 0;
     z-index: 5;
 }
+
+.btn-outline-orange {
+    color: #d35400;
+    border-color: #d35400;
+}
+
+.btn-outline-orange:hover,
+.btn-outline-orange:focus,
+.btn-outline-orange:active,
+.btn-outline-orange.active {
+    color: #fff;
+    background-color: #d35400;
+    border-color: #b04300;
+}
+
+.btn-outline-orange:disabled,
+.btn-outline-orange.disabled {
+    color: #d35400;
+    background-color: transparent;
+}

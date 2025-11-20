@@ -30,7 +30,7 @@ from flask import (
 )
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
-from sqlalchemy import delete, inspect
+from sqlalchemy import delete, func, inspect
 
 _REPORTLAB_IMPORT_ERROR: Exception | None = None
 try:
@@ -91,6 +91,7 @@ DEFAULT_SETTINGS = {
     "schedule_slot_minutes": DEFAULT_SCHEDULE_SLOT_MINUTES,
     "schedule_stand_count": DEFAULT_SCHEDULE_STAND_COUNT,
     "schedule_end_time": DEFAULT_SCHEDULE_END_TIME,
+    "schedule_rows": [],
 }
 BACKUP_DIR = SETTINGS_PATH.parent / "backups"
 
@@ -109,6 +110,29 @@ def _clean_optional_time(value: object) -> str:
     if not raw_value:
         return ""
     normalized = _normalize_time_string(raw_value, fallback="")
+    return normalized
+
+def _normalize_schedule_rows(
+    rows: object,
+    stand_count: int,
+) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    if not isinstance(rows, list):
+        return normalized
+    stand_count = max(4, stand_count)
+    for entry in rows:
+        if not isinstance(entry, dict):
+            continue
+        time_value = _normalize_time_string(entry.get("time"), "")
+        squads_raw = entry.get("squads")
+        squads: list[str] = []
+        if isinstance(squads_raw, list):
+            for value in squads_raw[:stand_count]:
+                text_value = "" if value is None else str(value).strip()
+                squads.append(text_value)
+        while len(squads) < stand_count:
+            squads.append("")
+        normalized.append({"time": time_value, "squads": squads})
     return normalized
 
 def _sanitize_pdf_text(text: object, fallback: str = "") -> str:
@@ -191,6 +215,10 @@ def load_app_settings() -> dict[str, object]:
 
             settings["schedule_end_time"] = _clean_optional_time(
                 raw_settings.get("schedule_end_time")
+            )
+
+            settings["schedule_rows"] = _normalize_schedule_rows(
+                raw_settings.get("schedule_rows"), settings["schedule_stand_count"]
             )
     return settings
 
@@ -456,6 +484,18 @@ class Competitor(db.Model):
 
     def to_dict(self) -> dict[str, object]:
         return {column["name"]: getattr(self, column["name"]) for column in COLUMNS}
+
+def _refresh_competitor_count_setting(forced_total: int | None = None) -> None:
+    total_competitors = forced_total
+    if total_competitors is None:
+        total_competitors = Competitor.query.count()
+    try:
+        total_value = int(total_competitors)
+    except (TypeError, ValueError):
+        total_value = 0
+    settings = load_app_settings()
+    settings["competitor_count"] = max(0, total_value)
+    save_app_settings(settings)
 
 
 def _safe_int(value: object, fallback: int = 0) -> int:
@@ -1560,6 +1600,80 @@ def update():
 
     return jsonify(competitor.to_dict())
 
+@app.route("/squads/add", methods=["POST"])
+def add_squad():
+    ensure_database_ready()
+    max_number = db.session.query(func.max(Competitor.number)).scalar() or 0
+    max_squad = db.session.query(func.max(Competitor.squad)).scalar() or 0
+    next_squad = max(1, int(max_squad) + 1)
+
+    new_competitors = [
+        Competitor(
+            number=max_number + idx + 1,
+            squad=next_squad,
+            name="",
+            lastname="",
+            category="",
+            parcour1=0,
+            parcour2=0,
+            parcour3=0,
+            parcour4=0,
+        )
+        for idx in range(SQUAD_SIZE)
+    ]
+
+    if not new_competitors:
+        return jsonify({"status": "error", "message": "Nie udało się utworzyć nowej grupy."}), 400
+
+    db.session.bulk_save_objects(new_competitors, return_defaults=False)
+    db.session.commit()
+    auto_backup_manager.mark_dirty()
+    metrics_cache.invalidate()
+    _refresh_competitor_count_setting()
+
+    return jsonify(
+        {
+            "status": "ok",
+            "added": len(new_competitors),
+            "squad": next_squad,
+            "message": f"Dodano grupę {next_squad}.",
+        }
+    )
+
+
+@app.route("/squads/remove", methods=["POST"])
+def remove_last_squad():
+    ensure_database_ready()
+    max_squad = db.session.query(func.max(Competitor.squad)).scalar()
+    if not max_squad:
+        return jsonify({"status": "error", "message": "Brak grup do usunięcia."}), 400
+
+    squad_count = db.session.query(Competitor.squad).distinct().count()
+    if squad_count <= 1:
+        return jsonify({"status": "error", "message": "Nie można usunąć jedynej grupy."}), 400
+
+    squad_members = Competitor.query.filter(Competitor.squad == max_squad).all()
+    if not squad_members:
+        return jsonify({"status": "error", "message": "Nie znaleziono zawodników w ostatniej grupie."}), 400
+
+    removed_count = len(squad_members)
+    for competitor in squad_members:
+        db.session.delete(competitor)
+
+    db.session.commit()
+    auto_backup_manager.mark_dirty()
+    metrics_cache.invalidate()
+    _refresh_competitor_count_setting()
+
+    return jsonify(
+        {
+            "status": "ok",
+            "removed": removed_count,
+            "squad": int(max_squad),
+            "message": f"Usunięto grupę {int(max_squad)}.",
+        }
+    )
+
 
 @app.route("/clear", methods=["POST"])
 def clear_competitors():
@@ -1782,6 +1896,9 @@ def update_schedule_settings():
     settings["schedule_slot_minutes"] = max(1, slot_minutes)
     settings["schedule_stand_count"] = max(4, stand_count)
     settings["schedule_end_time"] = _clean_optional_time(payload.get("end_time"))
+    settings["schedule_rows"] = _normalize_schedule_rows(
+        settings.get("schedule_rows"), settings["schedule_stand_count"]
+    )
     save_app_settings(settings)
 
     return jsonify(
@@ -1792,6 +1909,19 @@ def update_schedule_settings():
             "schedule_end_time": settings["schedule_end_time"],
         }
     )
+
+@app.route("/schedule/rows", methods=["POST"])
+def update_schedule_rows():
+    payload = request.get_json(silent=True) or {}
+    settings = load_app_settings()
+
+    stand_count = max(4, _safe_int(settings.get("schedule_stand_count"), DEFAULT_SCHEDULE_STAND_COUNT))
+    rows_payload = payload.get("rows")
+    normalized_rows = _normalize_schedule_rows(rows_payload, stand_count)
+    settings["schedule_rows"] = normalized_rows
+    save_app_settings(settings)
+
+    return jsonify({"rows": normalized_rows})
 
 
 @app.route("/live")
@@ -1832,9 +1962,13 @@ def schedule_builder_view():
 
     squad_rows = Competitor.query.with_entities(Competitor.squad).distinct().all()
     squads = sorted({row[0] for row in squad_rows})
-    schedule_rows = _build_schedule_rows(
-        squads, start_time, slot_minutes, stand_count, DEFAULT_SCHEDULE_ROUNDS, end_time
-    )
+    saved_rows = settings.get("schedule_rows")
+    if isinstance(saved_rows, list) and saved_rows:
+        schedule_rows = _normalize_schedule_rows(saved_rows, stand_count)
+    else:
+        schedule_rows = _build_schedule_rows(
+            squads, start_time, slot_minutes, stand_count, DEFAULT_SCHEDULE_ROUNDS, end_time
+        )
     competition_name = settings.get("page_title", DEFAULT_SETTINGS["page_title"])
 
     return render_template(

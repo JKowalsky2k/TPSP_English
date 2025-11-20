@@ -28,3 +28,63 @@ tbody tr:hover td {
 td[contenteditable]:focus {
     outline: 2px solid #fd5a5a; /* żółta obwódka */
 }
+
+.btn-outline-purple {
+    color: #6f42c1;
+    border-color: #6f42c1;
+}
+
+.btn-outline-purple:hover,
+.btn-outline-purple:focus,
+.btn-outline-purple:active,
+.btn-outline-purple.active {
+    color: #fff;
+    background-color: #6f42c1;
+    border-color: #5a2aa6;
+}
+
+.btn-outline-purple:disabled,
+.btn-outline-purple.disabled {
+    color: #6f42c1;
+    background-color: transparent;
+}
+
+.btn-outline-orange {
+    color: #d35400;
+    border-color: #d35400;
+}
+
+.btn-outline-orange:hover,
+.btn-outline-orange:focus,
+.btn-outline-orange:active,
+.btn-outline-orange.active {
+    color: #fff;
+    background-color: #d35400;
+    border-color: #b04300;
+}
+
+.btn-outline-orange:disabled,
+.btn-outline-orange.disabled {
+    color: #d35400;
+    background-color: transparent;
+}
+
+.btn-outline-blue {
+    color: #0d6efd;
+    border-color: #0d6efd;
+}
+
+.btn-outline-blue:hover,
+.btn-outline-blue:focus,
+.btn-outline-blue:active,
+.btn-outline-blue.active {
+    color: #fff;
+    background-color: #0d6efd;
+    border-color: #0b5ed7;
+}
+
+.btn-outline-blue:disabled,
+.btn-outline-blue.disabled {
+    color: #0d6efd;
+    background-color: transparent;
+}
