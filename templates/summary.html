@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>Podsumowanie edycji</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="{{ url_for('static', filename='index.css') }}" rel="stylesheet">
+</head>
+<body class="bg-light p-4">
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <h1 class="h3 mb-0">Podsumowanie edycji</h1>
+    <div class="d-flex gap-2">
+        <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">Wróć do tabeli</a>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <form method="POST" action="{{ url_for('summary_view') }}" enctype="multipart/form-data" class="d-flex flex-column gap-3">
+            <div>
+                <label for="backups" class="form-label">Wybierz pliki kopii (JSON) z poszczególnych edycji (kolejność = Edycja 1 → 4)</label>
+                <input type="file" class="form-control" id="backups" name="backups" accept=".json,application/json" multiple required>
+                <div class="form-text">Prześlij do 4 plików w kolejności edycji. Brakujące edycje będą uzupełnione zerami.</div>
+            </div>
+            <div>
+                <button type="submit" class="btn btn-outline-blue">Generuj podsumowanie</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+{% if errors %}
+<div class="alert alert-danger">
+    <ul class="mb-0">
+        {% for err in errors %}
+        <li>{{ err }}</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+{% if summary_rows %}
+<div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+    <button type="button" class="btn btn-outline-orange" id="summary-sort-category">
+        Sortuj: kategorie A→Z, wynik malejąco
+    </button>
+    <button type="button" class="btn btn-outline-purple" id="summary-pdf-button">
+        Eksportuj PDF (obecny widok)
+    </button>
+</div>
+<div class="table-responsive results-table-wrapper">
+    <table class="table table-bordered align-middle text-center" id="summary-table" data-edition-count="{{ edition_labels|length }}">
+        <thead class="table-dark">
+            <tr>
+                <th class="cursor-pointer" data-sort-key="name">Imię <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="cursor-pointer" data-sort-key="lastname">Nazwisko <span class="sort-indicator" aria-hidden="true"></span></th>
+                <th class="cursor-pointer" data-sort-key="category">Klasa <span class="sort-indicator" aria-hidden="true"></span></th>
+                {% for label in edition_labels %}
+                <th class="cursor-pointer" data-sort-key="edition-{{ loop.index0 }}">{{ label }} <span class="sort-indicator" aria-hidden="true"></span></th>
+                {% endfor %}
+                <th class="cursor-pointer" data-sort-key="total">Suma <span class="sort-indicator" aria-hidden="true"></span></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in summary_rows %}
+            <tr
+                data-summary-row
+                data-name="{{ row.name|lower }}"
+                data-lastname="{{ row.lastname|lower }}"
+                data-category="{{ row.category }}"
+                data-squad="{{ row.squad }}"
+                data-total="{{ row.total }}"
+                {% for idx in range(edition_labels|length) %}
+                data-ed{{ idx }}="{{ row.editions[idx] if row.editions and idx < row.editions|length else 0 }}"
+                {% endfor %}
+            >
+                <td>{{ row.name or '' }}</td>
+                <td class="lastname">{{ row.lastname or '' }}</td>
+                <td>{{ row.category or '' }}</td>
+                {% for idx in range(edition_labels|length) %}
+                <td>{{ row.editions[idx] if row.editions and idx < row.editions|length else 0 }}</td>
+                {% endfor %}
+                <td>{{ row.total }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+    const table = document.getElementById("summary-table");
+    const editionCount = parseInt(table?.dataset.editionCount || "0", 10);
+    const headers = Array.from(document.querySelectorAll("th[data-sort-key]"));
+    const rows = Array.from(document.querySelectorAll("tr[data-summary-row]"));
+    const sortCategoryBtn = document.getElementById("summary-sort-category");
+    const pdfButton = document.getElementById("summary-pdf-button");
+    const collator = new Intl.Collator("pl", { sensitivity: "base" });
+
+    const getValue = (row, key) => {
+        if (key === "name" || key === "lastname" || key === "category") {
+            return (row.dataset[key] || "").toString();
+        }
+        if (key === "squad") {
+            return parseInt(row.dataset.squad || "0", 10) || 0;
+        }
+        if (key === "total") {
+            return parseInt(row.dataset.total || "0", 10) || 0;
+        }
+        if (key.startsWith("edition-")) {
+            const idx = parseInt(key.split("-")[1] || "0", 10);
+            if (Number.isInteger(idx) && idx >= 0 && idx < editionCount) {
+                return parseInt(row.dataset[`ed${idx}`] || "0", 10) || 0;
+            }
+        }
+        return "";
+    };
+
+    let sortKey = "";
+    let sortDir = "asc";
+
+    const applySort = () => {
+        if (!table || !sortKey) {
+            return;
+        }
+        const tbody = table.querySelector("tbody");
+        if (!tbody) return;
+
+        const sorted = rows.slice().sort((a, b) => {
+            if (sortKey === "category_result") {
+                const catCmp = collator.compare(getValue(a, "category"), getValue(b, "category"));
+                if (catCmp !== 0) return catCmp;
+                const totalA = getValue(a, "total");
+                const totalB = getValue(b, "total");
+                if (totalA !== totalB) return totalB - totalA;
+                const lastCmp = collator.compare(getValue(a, "lastname"), getValue(b, "lastname"));
+                if (lastCmp !== 0) return lastCmp;
+                return collator.compare(getValue(a, "name"), getValue(b, "name"));
+            }
+
+            const va = getValue(a, sortKey);
+            const vb = getValue(b, sortKey);
+
+            if (typeof va === "number" || typeof vb === "number") {
+                return sortDir === "asc" ? va - vb : vb - va;
+            }
+
+            return sortDir === "asc"
+                ? collator.compare(String(va), String(vb))
+                : collator.compare(String(vb), String(va));
+        });
+
+        sorted.forEach((row) => tbody.appendChild(row));
+
+        headers.forEach((header) => {
+            const indicator = header.querySelector(".sort-indicator");
+            if (!indicator) return;
+            if (header.dataset.sortKey === sortKey) {
+                indicator.textContent = sortDir === "asc" ? "↑" : "↓";
+            } else {
+                indicator.textContent = "";
+            }
+        });
+    };
+
+    headers.forEach((header) => {
+        header.addEventListener("click", () => {
+            const key = header.dataset.sortKey;
+            if (!key) return;
+            if (sortKey === key) {
+                sortDir = sortDir === "asc" ? "desc" : "asc";
+            } else {
+                sortKey = key;
+                sortDir = "asc";
+            }
+            applySort();
+        });
+    });
+
+    const buildPdfRows = () => {
+        const result = [];
+        const tbodyRows = Array.from(document.querySelectorAll("tr[data-summary-row]"));
+        tbodyRows.forEach((row) => {
+            if (row.style.display === "none") {
+                return;
+            }
+            const cells = Array.from(row.children);
+            const name = (cells[0]?.textContent || "").trim();
+            const lastname = (cells[1]?.textContent || "").trim();
+            const category = (cells[2]?.textContent || "").trim();
+            const editions = [];
+            for (let i = 0; i < editionCount; i++) {
+                const cell = cells[3 + i];
+                const raw = (cell?.textContent || "").trim();
+                const val = parseInt(raw, 10);
+                editions.push(Number.isNaN(val) ? 0 : val);
+            }
+            const totalCell = cells[3 + editionCount];
+            const totalRaw = (totalCell?.textContent || "").trim();
+            const totalVal = parseInt(totalRaw, 10);
+            result.push({
+                name,
+                lastname,
+                category,
+                editions,
+                total: Number.isNaN(totalVal) ? 0 : totalVal,
+            });
+        });
+        return result;
+    };
+
+    sortCategoryBtn?.addEventListener("click", () => {
+        sortKey = "category_result";
+        sortDir = "asc";
+        applySort();
+        headers.forEach((header) => {
+            const indicator = header.querySelector(".sort-indicator");
+            if (indicator) indicator.textContent = "";
+        });
+    });
+
+    pdfButton?.addEventListener("click", () => {
+        applySort();
+        const payload = {
+            rows: buildPdfRows(),
+            edition_labels: {{ edition_labels|tojson }},
+        };
+        pdfButton.disabled = true;
+        fetch("{{ url_for('summary_pdf') }}", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        })
+            .then((response) => {
+                if (!response.ok) {
+                    return response.json().catch(() => ({})).then((data) => {
+                        const message = data.error || "Nie udało się wygenerować PDF.";
+                        throw new Error(message);
+                    });
+                }
+                return response.blob();
+            })
+            .then((blob) => {
+                const url = window.URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = "podsumowanie.pdf";
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                window.URL.revokeObjectURL(url);
+            })
+            .catch((error) => {
+                console.error(error);
+                alert(error && error.message ? error.message : "Nie udało się wygenerować PDF.");
+            })
+            .finally(() => {
+                pdfButton.disabled = false;
+            });
+    });
+});
+</script>
+
+</body>
+</html>

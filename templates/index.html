@@ -18,19 +18,20 @@
     <button type="button" class="btn btn-outline-purple" id="start-list-pdf-button">
         Lista startowa (PDF)
     </button>
+    <a href="{{ url_for('summary_view') }}" class="btn btn-outline-blue" target="_blank" rel="noopener">Podsumowanie</a>
     <a href="{{ url_for('schedule_builder_view') }}" target="_blank" class="btn btn-outline-blue">
         Harmonogram
     </a>
+    <button type="button" class="btn btn-danger ms-2" id="clear-table-button">
+        Wyczyść tabelę
+    </button>
+    <div class="flex-grow-1"></div>
     <div class="btn-group" role="group" aria-label="Sortowanie kategorii">
         <a href="{{ url_for('index', sort='category_result', order='asc') }}"
            class="btn btn-outline-orange {% if sort == 'category_result' and order != 'desc' %}active{% endif %}">
             Kategorie A→Z, wynik malejąco
         </a>
     </div>
-    <div class="flex-grow-1"></div>
-    <button type="button" class="btn btn-danger ms-2" id="clear-table-button">
-        Wyczyść tabelę
-    </button>
 </div>
 
 <div class="card mb-3">
@@ -69,8 +70,8 @@
     </div>
 </div>
 
-<div class="table-responsive">
-<table class="table table-striped table-hover table-bordered align-middle text-center" id="tabela">
+<div class="table-responsive results-table-wrapper">
+<table class="table table-hover table-bordered align-middle text-center" id="tabela">
 <thead class="table-dark">
 <tr>
 {% for col in columns %}
@@ -90,44 +91,58 @@
 </thead>
 <tbody>
 {% for z in competitors %}
-<tr x-data="{}" class="{{ 'group-even' if z.squad % 2 == 0 else 'group-odd' }}">
+{% set squad_number = (z.squad or 1)|int %}
+{% set is_even_squad = squad_number % 2 == 0 %}
+<tr x-data="{}" class="group-row {{ 'group-even' if is_even_squad else 'group-odd' }}">
 {% for col in columns %}
     {% set td_class = '' %}
     {% if col.name == 'category' or col.name == 'parcour1' %}{% set td_class = 'col-gap-right' %}
     {% elif col.name == 'parcour4' or col.name == 'result' %}{% set td_class = 'col-gap-left' %}{% endif %}
+    {% if col.name in ['parcour1', 'parcour4'] %}{% set td_class = td_class + ' parcour-center' %}{% endif %}
     {% if col.name == 'lastname' %}{% set td_class = td_class + ' lastname' %}{% endif %}
     {% if col.name.startswith('parcour') and getattr(z, col.name) == 25 %}{% set td_class = td_class + ' max-score' %}{% endif %}
     {% if col.name == 'category' %}
-    {% set allowed_categories = ['A', 'B', 'C', 'Junior', 'Lady', 'Senior'] %}
+    {% set allowed_categories = ['A', 'B', 'C', 'Junior', 'Super Junior', 'Lady', 'Senior'] %}
     {% set current_category = getattr(z, col.name) %}
-<td class="{{ td_class }}" data-grid-cell tabindex="-1">
+<td class="{{ td_class }}" data-grid-cell data-editable="1" tabindex="-1">
     <select class="form-select form-select-sm category-select"
     data-default-value=""
     data-persisted-value="{{ current_category or '' }}"
     @change="
+        const selectEl = $event.target;
+        const previousValue = selectEl.dataset.persistedValue || selectEl.value || '';
         fetch('/update',{
             method:'POST',
             headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({id:{{ z.id }}, field:'{{ col.name }}', value:$event.target.value})
+            body:JSON.stringify({id:{{ z.id }}, field:'{{ col.name }}', value:selectEl.value})
         })
-        .then(r=>r.json())
+        .then((response) => {
+            if (!response.ok) {
+                return response.json().catch(() => ({})).then((payload) => {
+                    const message = payload.error || payload.message || 'Nie udało się zapisać zmian.';
+                    throw new Error(message);
+                });
+            }
+            return response.json();
+        })
         .then(res=>{
-            const row = $event.target.closest('tr');
+            const row = selectEl.closest('tr');
+            if(!row){ return; }
             const cells = row.children;
             {% for c in columns %}
             {
                 const cell = cells[{{ loop.index0 }}];
                 if('{{ c.name }}' === 'category'){
-                    const selectEl = cell.querySelector('select');
-                    if(selectEl){
+                    const selectTarget = cell.querySelector('select');
+                    if(selectTarget){
                         const rawValue = res['{{ c.name }}'];
                         const normalizedValue = rawValue === undefined || rawValue === null ? '' : String(rawValue);
-                        const defaultValue = selectEl.dataset.defaultValue || '';
-                        selectEl.dataset.persistedValue = normalizedValue;
+                        const defaultValue = selectTarget.dataset.defaultValue || '';
+                        selectTarget.dataset.persistedValue = normalizedValue;
                         let nextValue = normalizedValue || defaultValue;
                         if(nextValue){
                             let hasOption = false;
-                            for(const option of selectEl.options){
+                            for(const option of selectTarget.options){
                                 if(option.value === nextValue){
                                     hasOption = true;
                                     break;
@@ -137,11 +152,11 @@
                                 const opt = document.createElement('option');
                                 opt.value = nextValue;
                                 opt.textContent = nextValue;
-                                selectEl.appendChild(opt);
+                                selectTarget.appendChild(opt);
                             }
-                            selectEl.value = nextValue;
+                            selectTarget.value = nextValue;
                         } else {
-                            selectEl.value = '';
+                            selectTarget.value = '';
                         }
                     } else {
                         cell.textContent = res['{{ c.name }}'];
@@ -159,7 +174,11 @@
             {% endfor %}
 
             const g = parseInt(res.squad) || 1;
-            row.className = (g%2==0)?'group-even':'group-odd';
+            row.className = getGroupClass(g);
+        })
+        .catch((error)=>{
+            console.error(error);
+            selectEl.value = previousValue;
         })">
         <option value="" {% if not current_category %}selected{% endif %}>-</option>
         {% if current_category and current_category not in allowed_categories %}
@@ -171,16 +190,27 @@
     </select>
 </td>
     {% else %}
-<td class="{{ td_class }}" data-grid-cell tabindex="-1" {% if col.name in editable_columns %} contenteditable {% endif %}
+<td class="{{ td_class }}" data-grid-cell data-editable="{% if col.name in editable_columns %}1{% else %}0{% endif %}" tabindex="-1" {% if col.name in editable_columns %} contenteditable {% endif %}
 @blur="
+    if ($el.dataset.editable !== '1') { return; }
+    const previousValue = $el.dataset.initialValue ?? $el.innerText;
     fetch('/update',{
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({id:{{ z.id }}, field:'{{ col.name }}', value:$el.innerText})
     })
-    .then(r=>r.json())
+    .then((response) => {
+        if (!response.ok) {
+            return response.json().catch(() => ({})).then((payload) => {
+                const message = payload.error || payload.message || 'Nie udało się zapisać zmian.';
+                throw new Error(message);
+            });
+        }
+        return response.json();
+    })
     .then(res=>{
         const row = $el.parentNode;
+        if(!row){ return; }
         const cells = row.children;
         {% for c in columns %}
         {
@@ -227,7 +257,12 @@
         {% endfor %}
 
         const g = parseInt(res.squad) || 1;
-        row.className = (g%2==0)?'group-even':'group-odd';
+        row.className = getGroupClass(g);
+        $el.dataset.initialValue = $el.innerText;
+    })
+    .catch((error)=>{
+        console.error(error);
+        $el.innerText = previousValue;
     })"
 >
 {{ getattr(z, col.name) }}
@@ -241,7 +276,14 @@
 </div>
 
 <script>
+const getGroupClass = (squad) => {
+    const g = parseInt(squad) || 1;
+    const isEven = g % 2 === 0;
+    return `group-row ${isEven ? "group-even" : "group-odd"}`;
+};
+
 document.addEventListener("DOMContentLoaded", () => {
+
     const backupButton = document.getElementById("create-backup-button");
     if (backupButton) {
         backupButton.addEventListener("click", () => {
@@ -436,8 +478,31 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const resultsTable = document.getElementById("tabela");
     const tableBody = resultsTable ? resultsTable.querySelector("tbody") : null;
+    const tableWrapper = resultsTable ? resultsTable.closest(".results-table-wrapper") : null;
+    const tableHeader = resultsTable ? resultsTable.querySelector("thead") : null;
 
     if (resultsTable && tableBody) {
+        const scrollRowIntoView = (row) => {
+            if (!tableWrapper || !row) {
+                return;
+            }
+            const headerHeight = tableHeader ? tableHeader.getBoundingClientRect().height : 0;
+            const padding = 6;
+            const containerTop = tableWrapper.scrollTop;
+            const containerHeight = tableWrapper.clientHeight;
+            const rowTop = row.offsetTop;
+            const rowBottom = rowTop + row.offsetHeight;
+
+            const visibleTop = containerTop + headerHeight + padding;
+            const visibleBottom = containerTop + containerHeight - padding;
+
+            if (rowTop < visibleTop) {
+                tableWrapper.scrollTop = Math.max(rowTop - headerHeight - padding, 0);
+            } else if (rowBottom > visibleBottom) {
+                tableWrapper.scrollTop = rowBottom - containerHeight + padding;
+            }
+        };
+
         const focusCell = (cell) => {
             if (!cell) {
                 return;
@@ -508,6 +573,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
         resultsTable.addEventListener("focusin", (event) => {
             const cell = event.target.closest("td[data-grid-cell]");
+            const row = cell ? cell.parentElement : null;
+            scrollRowIntoView(row);
+            if (cell && cell.hasAttribute("contenteditable")) {
+                cell.dataset.initialValue = cell.textContent;
+            }
             if (!cell || !cell.hasAttribute("contenteditable")) {
                 return;
             }
@@ -597,6 +667,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const targetCell = pickTargetCell(targetRow, targetCol);
             if (targetCell && targetCell.dataset.gridCell !== undefined) {
+                scrollRowIntoView(targetCell.parentElement);
                 focusCell(targetCell);
             }
         });

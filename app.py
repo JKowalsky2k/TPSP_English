@@ -71,6 +71,7 @@ DEFAULT_SCHEDULE_SLOT_MINUTES = 20
 DEFAULT_SCHEDULE_STAND_COUNT = 4
 DEFAULT_SCHEDULE_END_TIME = ""
 DEFAULT_SCHEDULE_ROUNDS = 2
+SUMMARY_EDITION_LIMIT = 4
 DEFAULT_COLUMNS: list[dict[str, object]] = [
     {"name": "squad", "label": "Grupa", "editable": False},
     {"name": "number", "label": "Numer", "editable": False},
@@ -463,7 +464,7 @@ LAST_NAMES = [
     "Rodriguez", "Martinez", "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson",
     "Thomas", "Taylor", "Moore", "Jackson", "Martin"
 ]
-CATEGORY_CHOICES = ["Junior", "Lady", "Senior", "A", "B", "C"]
+CATEGORY_CHOICES = ["Junior", "Super Junior", "Lady", "Senior", "A", "B", "C"]
 
 class Competitor(db.Model):
     __tablename__ = "competitor"
@@ -806,6 +807,163 @@ def clamp_score(value: object) -> int:
         return 0
     return max(0, min(MAX_PARCOUR_SCORE, score))
 
+
+def _parse_backup_timestamp(payload: dict[str, object]) -> datetime | None:
+    if not isinstance(payload, dict):
+        return None
+    raw_value = payload.get("generated_at")
+    if not raw_value:
+        return None
+    try:
+        text = str(raw_value).strip()
+        if text.endswith("Z"):
+            text = text[:-1]
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
+
+
+def _backup_sort_key(payload: dict[str, object]) -> tuple[int, datetime]:
+    timestamp = _parse_backup_timestamp(payload)
+    # Older backups first; unknown timestamps go to the end while keeping stable order
+    return (0, timestamp) if timestamp else (1, datetime.max)
+
+
+def _normalize_backup_record(record: dict[str, object]) -> dict[str, object]:
+    name = str(record.get("name") or "").strip()
+    lastname = str(record.get("lastname") or "").strip()
+    category = str(record.get("category") or "").strip()
+    squad = _safe_int(record.get("squad"), 0)
+    raw_result = record.get("result")
+    if isinstance(raw_result, (int, float)):
+        result_value = int(raw_result)
+    else:
+        result_value = 0
+        for field in PARCOUR_FIELDS:
+            result_value += clamp_score(record.get(field))
+    return {
+        "name": name,
+        "lastname": lastname,
+        "category": category,
+        "squad": squad,
+        "result": max(0, result_value),
+    }
+
+
+def combine_backup_summaries(payloads: list[dict[str, object]], max_editions: int = SUMMARY_EDITION_LIMIT) -> list[dict[str, object]]:
+    edition_count = max_editions if payloads else 0
+    if edition_count <= 0:
+        return []
+
+    sorted_payloads = sorted(payloads[:max_editions], key=_backup_sort_key)
+
+    combined: dict[tuple[str, str, str], dict[str, object]] = {}
+    for idx in range(edition_count):
+        if idx >= len(sorted_payloads):
+            continue
+        records = sorted_payloads[idx].get("records") if isinstance(sorted_payloads[idx], dict) else None
+        if not isinstance(records, list):
+            continue
+        for raw_record in records:
+            if not isinstance(raw_record, dict):
+                continue
+            normalized = _normalize_backup_record(raw_record)
+            key = (
+                normalized["lastname"].lower(),
+                normalized["name"].lower(),
+                normalized["category"].lower(),
+            )
+            entry = combined.setdefault(
+                key,
+                {
+                    "name": normalized["name"],
+                    "lastname": normalized["lastname"],
+                    "category": normalized["category"],
+                    "squad": normalized["squad"],
+                    "editions": [0] * edition_count,
+                },
+            )
+            entry["editions"][idx] = normalized["result"]
+            if not entry.get("squad"):
+                entry["squad"] = normalized["squad"]
+
+    rows = []
+    for entry in combined.values():
+        editions = entry["editions"]
+        rows.append(
+            {
+                "name": entry["name"],
+                "lastname": entry["lastname"],
+                "category": entry["category"],
+                "squad": entry.get("squad", 0),
+                "editions": editions,
+                "total": sum(editions),
+            }
+        )
+
+    rows.sort(key=lambda item: (item["lastname"].lower(), item["name"].lower(), item["category"].lower()))
+    return rows
+
+
+def build_summary_pdf_bytes(rows: list[dict[str, object]], edition_labels: list[str]) -> bytes:
+    _ensure_pdf_backend()
+    styles = _get_pdf_styles()
+    buffer = BytesIO()
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        leftMargin=18,
+        rightMargin=18,
+        topMargin=20,
+        bottomMargin=20,
+    )
+
+    header_cells = ["Imię", "Nazwisko", "Klasa"] + list(edition_labels) + ["Suma"]
+    table_data: list[list[Paragraph | str]] = [header_cells]
+
+    for row in rows:
+        editions = row.get("editions") or []
+        cells: list[Paragraph | str] = [
+            _paragraph(str(row.get("name") or ""), styles["table_cell_left"]),
+            _paragraph(str(row.get("lastname") or ""), styles["table_cell_left"]),
+            _paragraph(str(row.get("category") or ""), styles["table_cell_center"]),
+        ]
+        for idx in range(len(edition_labels)):
+            value = 0
+            if idx < len(editions):
+                try:
+                    value = int(editions[idx])
+                except (TypeError, ValueError):
+                    value = 0
+            cells.append(_paragraph(str(value), styles["table_cell_center"]))
+        cells.append(_paragraph(str(row.get("total") or 0), styles["table_cell_center"]))
+        table_data.append(cells)
+
+    col_count = len(header_cells)
+    table = Table(table_data, repeatRows=1)
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), rl_colors.black),
+                ("TEXTCOLOR", (0, 0), (-1, 0), rl_colors.white),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("GRID", (0, 0), (-1, -1), 0.5, rl_colors.grey),
+                ("FONTNAME", (0, 0), (-1, 0), _register_pdf_fonts()[1]),
+                ("FONTNAME", (0, 1), (-1, -1), _register_pdf_fonts()[0]),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+
+    doc.build([table])
+    return buffer.getvalue()
+
 def init_db():
     db.create_all()
 
@@ -819,6 +977,17 @@ def fetch_competitors(sort: str, order: str) -> list[Competitor]:
             Competitor.query.all(),
             key=lambda competitor: competitor.result,
             reverse=requested_order == "desc",
+        )
+    elif requested_sort == "group_result":
+        competitors = sorted(
+            Competitor.query.all(),
+            key=lambda competitor: (
+                competitor.squad or 0 if requested_order != "desc" else -(competitor.squad or 0),
+                -(competitor.result or 0),
+                (competitor.lastname or "").lower(),
+                (competitor.name or "").lower(),
+                competitor.number or 0,
+            ),
         )
     elif requested_sort == "category_result":
         competitors_by_category: dict[str, list[Competitor]] = defaultdict(list)
@@ -1570,6 +1739,71 @@ def index():
         schedule_stand_count=settings.get("schedule_stand_count", DEFAULT_SCHEDULE_STAND_COUNT),
         schedule_end_time=settings.get("schedule_end_time", DEFAULT_SCHEDULE_END_TIME),
         getattr=getattr,
+    )
+
+
+@app.route("/summary", methods=["GET", "POST"])
+def summary_view():
+    ensure_database_ready()
+    errors: list[str] = []
+    summary_rows: list[dict[str, object]] = []
+    edition_labels = [f"Edycja {idx}" for idx in range(1, SUMMARY_EDITION_LIMIT + 1)]
+    summary_categories: list[str] = []
+
+    if request.method == "POST":
+        uploaded_files = request.files.getlist("backups")
+        if not uploaded_files:
+            errors.append("Dodaj co najmniej jeden plik JSON z kopią zapasową.")
+        else:
+            payloads: list[dict[str, object]] = []
+            for uploaded in uploaded_files[:SUMMARY_EDITION_LIMIT]:
+                if not uploaded or not uploaded.filename:
+                    continue
+                try:
+                    data = json.load(uploaded)
+                except Exception:
+                    errors.append(f"Nie udało się wczytać pliku {uploaded.filename}.")
+                    continue
+                if isinstance(data, dict):
+                    payloads.append(data)
+            if payloads:
+                summary_rows = combine_backup_summaries(payloads, SUMMARY_EDITION_LIMIT)
+                categories_set = {row["category"] for row in summary_rows if row.get("category")}
+                summary_categories = sorted(categories_set)
+            else:
+                errors.append("Brak poprawnych plików JSON.")
+
+    return render_template(
+        "summary.html",
+        edition_labels=edition_labels,
+        summary_rows=summary_rows,
+        errors=errors,
+        summary_categories=summary_categories,
+    )
+
+
+@app.route("/summary/pdf", methods=["POST"])
+def summary_pdf():
+    payload = request.get_json(silent=True) or {}
+    rows = payload.get("rows")
+    edition_labels = payload.get("edition_labels")
+
+    if not isinstance(rows, list) or not isinstance(edition_labels, list):
+        return jsonify({"error": "Brak danych do wygenerowania PDF."}), 400
+
+    edition_labels = [str(label) for label in edition_labels][:SUMMARY_EDITION_LIMIT]
+    if not edition_labels:
+        edition_labels = [f"Edycja {idx}" for idx in range(1, SUMMARY_EDITION_LIMIT + 1)]
+    try:
+        pdf_bytes = build_summary_pdf_bytes(rows, edition_labels)
+    except Exception as exc:  # pragma: no cover - defensive
+        return jsonify({"error": f"Nie udało się wygenerować PDF: {exc}"}), 500
+
+    return send_file(
+        BytesIO(pdf_bytes),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name="podsumowanie.pdf",
     )
 
 @app.route("/update", methods=["POST"])
