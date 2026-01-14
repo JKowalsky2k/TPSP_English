@@ -85,8 +85,8 @@
                 <thead class="table-light">
                 <tr>
                     <th class="text-nowrap">Godzina</th>
-                    {% for idx in range(schedule_stand_count) %}
-                        <th>Parkour {{ idx + 1 }}</th>
+                    {% for label in schedule_headers|default([]) %}
+                        <th>{{ label }}</th>
                     {% endfor %}
                 </tr>
                 </thead>

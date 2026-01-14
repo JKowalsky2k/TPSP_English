@@ -150,6 +150,33 @@ def _safe_int(value: object, fallback: int = 0) -> int:
     except (TypeError, ValueError):
         return fallback
 
+
+def _normalize_schedule_headers(headers: Sequence[str] | None, stand_count: int) -> list[str]:
+    normalized: list[str] = []
+    header_values = list(headers or [])
+    for idx in range(stand_count):
+        label = header_values[idx] if idx < len(header_values) else ""
+        cleaned = str(label or "").strip()
+        normalized.append(cleaned or f"Parkur {idx + 1}")
+    return normalized
+
+
+def _build_schedule_headers(columns: Sequence[dict[str, object]], stand_count: int) -> list[str]:
+    label_by_name: dict[str, str] = {}
+    for column in columns:
+        if not isinstance(column, dict):
+            continue
+        name = str(column.get("name") or "").strip()
+        if not name:
+            continue
+        label = str(column.get("label") or "").strip()
+        label_by_name[name] = label or name
+    headers: list[str] = []
+    for idx in range(stand_count):
+        field_name = PARCOUR_FIELDS[idx] if idx < len(PARCOUR_FIELDS) else f"parcour{idx + 1}"
+        headers.append(label_by_name.get(field_name, ""))
+    return _normalize_schedule_headers(headers, stand_count)
+
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DATABASE_NAME}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -1580,6 +1607,7 @@ def build_schedule_pdf_bytes(
     title: str,
     end_time: str | None,
     rows: list[dict[str, object]] | None = None,
+    schedule_headers: Sequence[str] | None = None,
 ) -> bytes:
     _ensure_pdf_backend()
     styles = _get_pdf_styles()
@@ -1609,9 +1637,10 @@ def build_schedule_pdf_bytes(
         doc.build(elements)
         return buffer.getvalue()
 
+    schedule_headers = _normalize_schedule_headers(schedule_headers, stand_count)
     header_cells = [_paragraph("Godzina", styles["table_header"])]
-    for idx in range(stand_count):
-        header_cells.append(_paragraph(f"Parkour {idx + 1}", styles["table_header"]))
+    for label in schedule_headers:
+        header_cells.append(_paragraph(label, styles["table_header"]))
     table_data: list[list[object]] = [header_cells]
 
     for row in rows:
@@ -2193,6 +2222,9 @@ def schedule_builder_view():
     )
     stand_count = max(4, _safe_int(settings.get("schedule_stand_count"), DEFAULT_SCHEDULE_STAND_COUNT))
     end_time = _clean_optional_time(settings.get("schedule_end_time", DEFAULT_SCHEDULE_END_TIME))
+    schedule_headers = _build_schedule_headers(
+        settings.get("columns", DEFAULT_COLUMNS), stand_count
+    )
 
     squad_rows = Competitor.query.with_entities(Competitor.squad).distinct().all()
     squads = sorted({row[0] for row in squad_rows})
@@ -2212,6 +2244,7 @@ def schedule_builder_view():
         schedule_stand_count=stand_count,
         schedule_end_time=end_time,
         schedule_rows=schedule_rows,
+        schedule_headers=schedule_headers,
         competition_name=competition_name,
         default_rounds=DEFAULT_SCHEDULE_ROUNDS,
     )
@@ -2269,6 +2302,9 @@ def export_schedule_pdf():
                 cleaned_rows.append({"time": time_value, "squads": assignments})
         max_assignments = max((len(row.get("squads", [])) for row in cleaned_rows), default=stand_count)
         effective_stand_count = max(4, stand_count, max_assignments)
+        schedule_headers = _build_schedule_headers(
+            settings.get("columns", DEFAULT_COLUMNS), effective_stand_count
+        )
         safe_title = _sanitize_pdf_text(payload.get("title"), "Harmonogram")
         pdf = build_schedule_pdf_bytes(
             [],
@@ -2279,6 +2315,7 @@ def export_schedule_pdf():
             safe_title or "Harmonogram",
             end_time,
             rows=cleaned_rows if cleaned_rows else None,
+            schedule_headers=schedule_headers,
         )
     else:
         start_time_arg = request.args.get("start_time") or settings.get(
@@ -2295,15 +2332,20 @@ def export_schedule_pdf():
 
         squad_rows = Competitor.query.with_entities(Competitor.squad).distinct().all()
         squads = sorted({row[0] for row in squad_rows})
+        effective_stand_count = max(4, stand_count)
+        schedule_headers = _build_schedule_headers(
+            settings.get("columns", DEFAULT_COLUMNS), effective_stand_count
+        )
         safe_competition_name = _sanitize_pdf_text(competition_name, "Zawody")
         pdf = build_schedule_pdf_bytes(
             squads,
             start_time,
             max(1, slot_minutes),
-            max(4, stand_count),
+            effective_stand_count,
             DEFAULT_SCHEDULE_ROUNDS,
             "Harmonogram",
             end_time,
+            schedule_headers=schedule_headers,
         )
 
     response = make_response(pdf)
