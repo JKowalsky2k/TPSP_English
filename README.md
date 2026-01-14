@@ -1,5 +1,5 @@
-# TPSP
-Torunski Program Strzelectwa Parkurowego
+# TPSP English
+Torunski Program Strzelectwa Parkurowego dla Parkur English
 
 ## Szybki start (Windows, mało technicznie)
 
