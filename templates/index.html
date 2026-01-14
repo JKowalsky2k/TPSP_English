@@ -77,7 +77,9 @@
 {% for col in columns %}
     {% set th_class = '' %}
     {% if col.name == 'category' or col.name == 'parcour1' %}{% set th_class = 'col-gap-right' %}
-    {% elif col.name == 'parcour4' or col.name == 'result' %}{% set th_class = 'col-gap-left' %}{% endif %}
+    {% elif col.name == 'parcour12' or col.name == 'result' %}{% set th_class = 'col-gap-left' %}{% endif %}
+    {% if col.name.startswith('parcour') %}{% set th_class = (th_class + ' parcour-col')|trim %}{% endif %}
+    {% if col.name == 'category' %}{% set th_class = (th_class + ' category-col')|trim %}{% endif %}
     <th class="{{ th_class }} cursor-pointer">
         <a href="/?sort={{ col.name }}&order={% if sort==col.name and order=='asc' %}desc{% else %}asc{% endif %}" class="text-white text-decoration-none">
             {{ col.label }}
@@ -97,10 +99,12 @@
 {% for col in columns %}
     {% set td_class = '' %}
     {% if col.name == 'category' or col.name == 'parcour1' %}{% set td_class = 'col-gap-right' %}
-    {% elif col.name == 'parcour4' or col.name == 'result' %}{% set td_class = 'col-gap-left' %}{% endif %}
-    {% if col.name in ['parcour1', 'parcour4'] %}{% set td_class = td_class + ' parcour-center' %}{% endif %}
+    {% elif col.name == 'parcour12' or col.name == 'result' %}{% set td_class = 'col-gap-left' %}{% endif %}
+    {% if col.name in ['parcour1', 'parcour12'] %}{% set td_class = td_class + ' parcour-center' %}{% endif %}
     {% if col.name == 'lastname' %}{% set td_class = td_class + ' lastname' %}{% endif %}
-    {% if col.name.startswith('parcour') and getattr(z, col.name) == 25 %}{% set td_class = td_class + ' max-score' %}{% endif %}
+    {% if col.name.startswith('parcour') %}{% set td_class = td_class + ' parcour-col' %}{% endif %}
+    {% if col.name == 'category' %}{% set td_class = td_class + ' category-col' %}{% endif %}
+    {% if col.name.startswith('parcour') and (getattr(z, col.name) or 0)|int == max_score %}{% set td_class = td_class + ' max-score' %}{% endif %}
     {% if col.name == 'category' %}
     {% set allowed_categories = ['A', 'B', 'C', 'Junior', 'Super Junior', 'Lady', 'Senior'] %}
     {% set current_category = getattr(z, col.name) %}
@@ -165,7 +169,7 @@
                     cell.textContent = res['{{ c.name }}'];
                 }
 
-                if('{{ c.name }}'.startsWith('parcour') && res['{{ c.name }}'] == 25){
+                if ('{{ c.name }}'.startsWith('parcour') && Number(res['{{ c.name }}']) === maxScore) {
                     cell.classList.add('max-score');
                 } else {
                     cell.classList.remove('max-score');
@@ -248,7 +252,7 @@
                     cell.textContent = res['{{ c.name }}'];
             }
 
-            if('{{ c.name }}'.startsWith('parcour') && res['{{ c.name }}'] == 25){
+            if ('{{ c.name }}'.startsWith('parcour') && Number(res['{{ c.name }}']) === maxScore) {
                 cell.classList.add('max-score');
             } else {
                 cell.classList.remove('max-score');
@@ -276,6 +280,7 @@
 </div>
 
 <script>
+const maxScore = {{ max_score|int }};
 const getGroupClass = (squad) => {
     const g = parseInt(squad) || 1;
     const isEven = g % 2 === 0;

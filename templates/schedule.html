@@ -22,7 +22,6 @@
 <div class="d-flex flex-wrap align-items-center gap-3 mb-3">
     <div>
         <h1 class="mb-1">Harmonogram</h1>
-        <div class="text-muted">{{ competition_name }}</div>
     </div>
     <div class="ms-auto d-flex gap-2">
         <a href="/" class="btn btn-outline-secondary">← Wróć do tabeli</a>
@@ -62,6 +61,16 @@
                 {% endfor %}
             </select>
         </div>
+        <div class="col-sm-3">
+            <label for="schedule-axis-range" class="form-label mb-1">Zakres osi</label>
+            <div class="d-flex align-items-center gap-2">
+                <span class="small text-muted">Osie 1–6</span>
+                <div class="form-check form-switch m-0">
+                    <input class="form-check-input" type="checkbox" role="switch" id="schedule-axis-range" aria-label="Zakres osi">
+                </div>
+                <span class="small text-muted">Osie 7–12</span>
+            </div>
+        </div>
         <div class="col-sm-3 text-sm-end">
             <small class="text-muted d-block mb-1">Ustawienia zapisują się automatycznie.</small>
         </div>
@@ -100,10 +109,12 @@
     const scheduleStartInput = document.getElementById("schedule-start-time");
     const scheduleSlotInput = document.getElementById("schedule-slot-minutes");
     const scheduleEndInput = document.getElementById("schedule-end-time");
+    const axisRangeInput = document.getElementById("schedule-axis-range");
     const scheduleStandCount = {{ schedule_stand_count|default(4) }};
     const defaultRounds = {{ default_rounds|default(2) }};
     const initialRows = {{ schedule_rows|tojson }};
     const tableBody = document.querySelector("#schedule-table tbody");
+    const scheduleHeaderRow = document.querySelector("#schedule-table thead tr");
     const clearAssignmentsButton = document.getElementById("clear-assignments-button");
     const generatePdfButton = document.getElementById("generate-pdf-button");
     let activeCell = null;
@@ -112,6 +123,49 @@
 
     const defaultStartTime = "{{ schedule_start_time }}";
     const defaultSlotMinutes = {{ schedule_slot_minutes|default(20) }};
+    let activeScheduleHeaders = {{ schedule_headers|tojson }};
+
+    const getAxisOffsetFromHeaders = (labels) => {
+        if (!Array.isArray(labels) || !labels.length) {
+            return 0;
+        }
+        const match = String(labels[0]).match(/(\d+)/);
+        if (!match) {
+            return 0;
+        }
+        const startIndex = parseInt(match[1], 10);
+        if (Number.isNaN(startIndex) || startIndex <= scheduleStandCount) {
+            return 0;
+        }
+        return scheduleStandCount;
+    };
+
+    const buildAxisHeaders = (offset) => {
+        const labels = [];
+        for (let idx = 0; idx < scheduleStandCount; idx += 1) {
+            labels.push(`Oś ${idx + 1 + offset}`);
+        }
+        return labels;
+    };
+
+    const applyScheduleHeaders = (labels) => {
+        if (!scheduleHeaderRow) {
+            return;
+        }
+        const cells = scheduleHeaderRow.querySelectorAll("th");
+        labels.forEach((label, idx) => {
+            const cell = cells[idx + 1];
+            if (cell) {
+                cell.textContent = label;
+            }
+        });
+    };
+
+    const updateAxisHeaders = () => {
+        const offset = axisRangeInput && axisRangeInput.checked ? scheduleStandCount : 0;
+        activeScheduleHeaders = buildAxisHeaders(offset);
+        applyScheduleHeaders(activeScheduleHeaders);
+    };
 
     const persistScheduleSettings = () => {
         if (!scheduleStartInput || !scheduleSlotInput) {
@@ -446,6 +500,11 @@
             requestScheduleRowsSave();
         });
     }
+    if (axisRangeInput) {
+        axisRangeInput.addEventListener("input", () => {
+            updateAxisHeaders();
+        });
+    }
     if (clearAssignmentsButton) {
         clearAssignmentsButton.addEventListener("click", () => {
             clearAssignments();
@@ -469,6 +528,7 @@
                         stand_count: scheduleStandCount,
                         end_time: scheduleEndInput ? scheduleEndInput.value : "",
                         rows,
+                        headers: activeScheduleHeaders,
                         title: "Harmonogram",
                     }),
                 });
@@ -495,6 +555,10 @@
     if (!currentRows.length) {
         rebuildRows();
     }
+    if (axisRangeInput) {
+        axisRangeInput.checked = getAxisOffsetFromHeaders(activeScheduleHeaders) === scheduleStandCount;
+    }
+    updateAxisHeaders();
     renderTable();
     document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "hidden") {

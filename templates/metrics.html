@@ -17,22 +17,30 @@
 
         <table class="metric-table">
             <thead>
+                {% set header_labels = parcour.axis_labels if parcour.axis_labels is defined else series_range %}
+                {% set total_columns = 2 + (header_labels|length * (shots_range|length + 2)) %}
                 <tr>
                     <th rowspan="2" class="start-number">Numer startowy</th>
                     <th rowspan="2" class="name-cell">Nazwisko imię</th>
-                    <th colspan="{{ series_range|length * shots_range|length }}" class="results-header">Wyniki strzelań</th>
-                    <th rowspan="2">Wynik</th>
-                    <th rowspan="2">Podpis</th>
+                    <th colspan="{{ header_labels|length * (shots_range|length + 2) }}" class="results-header">Wyniki strzelań</th>
                 </tr>
                 <tr>
-                    {% for series in series_range %}
-                    <th colspan="{{ shots_range|length }}" class="series-cell series-group-start series-group-end">Seria {{ series }}</th>
+                    {% for series in header_labels %}
+                    <th colspan="{{ shots_range|length }}" class="series-cell series-group-start">
+                        {% if series is string %}
+                            {{ series }}
+                        {% else %}
+                            Seria {{ series }}
+                        {% endif %}
+                    </th>
+                    <th class="series-cell">W</th>
+                    <th class="series-cell series-group-end{% if loop.last %} last-group-end{% endif %}">P</th>
                     {% endfor %}
                 </tr>
             </thead>
             <tbody>
                 {% for competitor in parcour.competitors %}
-                    {% set shot_counter = namespace(value=0) %}
+                    {% set competitor_loop = loop %}
                     <tr class="shot-index-row">
                         <td class="start-number" rowspan="2">{{ competitor.number }}</td>
                         <td class="name-cell" rowspan="2">{{ competitor.name }}</td>
@@ -42,43 +50,32 @@
                                 {% set shot_loop = loop %}
                                 {% set is_start = shot_loop.index0 == 0 %}
                                 {% set is_end = shot_loop.last %}
-                                {% if is_start and is_end %}
-                                    {% set cell_class = 'series-group-start series-group-end' %}
-                                {% elif is_start %}
+                                {% if is_start %}
                                     {% set cell_class = 'series-group-start' %}
-                                {% elif is_end %}
-                                    {% set cell_class = 'series-group-end' %}
                                 {% else %}
                                     {% set cell_class = '' %}
                                 {% endif %}
                                 {% set series_index = series_loop.index0 %}
                                 {% set shot_index = shot_loop.index0 %}
-                                {% set marker_value = competitor.markers[series_index][shot_index] %}
-                                {% set marker_string = (marker_value if marker_value is not none else '') ~ '' %}
-                                {% set marker_clean = marker_string | trim | upper %}
                                 <td class="{{ cell_class }}">
-                                    {% if marker_clean != 'X' and shot_counter.value < 25 %}
-                                        {% set shot_counter.value = shot_counter.value + 1 %}
-                                        {{ shot_counter.value }}
-                                    {% endif %}
                                 </td>
                             {% endfor %}
+                            <td class="series-result-cell"></td>
+                            <td class="series-signature-cell series-group-end{% if loop.last %} last-group-end{% endif %}"></td>
                         {% endfor %}
-                        <td class="result-cell" rowspan="2"></td>
-                        <td class="signature-cell" rowspan="2"></td>
                     </tr>
-                    <tr>
+                    <tr{% if not competitor_loop.last %} class="competitor-divider"{% endif %}>
                         {% for series_markers in competitor.markers %}
                             {% for marker in series_markers %}
                             {% if loop.index0 == 0 %}
                                 {% set cell_class = 'series-group-start' %}
-                            {% elif loop.last %}
-                                {% set cell_class = 'series-group-end' %}
                             {% else %}
                                 {% set cell_class = '' %}
                             {% endif %}
-                            <td class="{{ cell_class }}">{{ marker }}</td>
+                            <td class="{{ cell_class }}"></td>
                             {% endfor %}
+                            <td class="series-result-cell"></td>
+                            <td class="series-signature-cell series-group-end{% if loop.last %} last-group-end{% endif %}"></td>
                         {% endfor %}
                     </tr>
                 {% endfor %}

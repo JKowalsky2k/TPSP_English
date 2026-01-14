@@ -70,6 +70,7 @@
 </div>
 
 <script>
+const maxScore = {{ max_score|int }};
 const topBody = document.getElementById("top-body");
 const scrollBody = document.getElementById("scroll-body");
 const scrollContainer = document.getElementById("scroll-container");
@@ -108,7 +109,7 @@ function renderStandardRows(data) {
       td.innerText = z["{{ col.name }}"];
 
       // kolor maksymalnego wyniku
-      if ("{{ col.name }}".startsWith("parcour") && z["{{ col.name }}"] == 25) td.classList.add("max-score");
+      if ("{{ col.name }}".startsWith("parcour") && Number(z["{{ col.name }}"]) === maxScore) td.classList.add("max-score");
 
       // pogrubienie nazwiska
       if ("{{ col.name }}" === "lastname") td.classList.add("lastname");
@@ -133,7 +134,7 @@ function renderCategoryRows(data) {
       const td = document.createElement("td");
       td.innerText = z["{{ col.name }}"];
 
-      if ("{{ col.name }}".startsWith("parcour") && z["{{ col.name }}"] == 25) td.classList.add("max-score");
+      if ("{{ col.name }}".startsWith("parcour") && Number(z["{{ col.name }}"]) === maxScore) td.classList.add("max-score");
       if ("{{ col.name }}" === "lastname") td.classList.add("lastname");
 
       tr.appendChild(td);

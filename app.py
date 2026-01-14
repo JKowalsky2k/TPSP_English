@@ -9,6 +9,7 @@ import functools
 import html
 import os
 import unicodedata
+import textwrap
 from copy import deepcopy
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
@@ -30,7 +31,7 @@ from flask import (
 )
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
-from sqlalchemy import delete, func, inspect
+from sqlalchemy import delete, func, inspect, text
 
 _REPORTLAB_IMPORT_ERROR: Exception | None = None
 try:
@@ -57,8 +58,10 @@ else:
 
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE_NAME = "competitors.db"
-MAX_PARCOUR_SCORE = 25
-PARCOUR_FIELDS = ("parcour1", "parcour2", "parcour3", "parcour4")
+MAX_PARCOUR_SCORE = 10
+PARCOUR_COUNT = 12
+PARCOUR_FIELDS = tuple(f"parcour{idx}" for idx in range(1, PARCOUR_COUNT + 1))
+PARCOUR_INDEX = {field: idx + 1 for idx, field in enumerate(PARCOUR_FIELDS)}
 DEFAULT_COMPETITORS = 66
 SQUAD_SIZE = 6
 SERIES_COUNT = 6
@@ -68,7 +71,7 @@ SETTINGS_PATH = INSTANCE_PATH / "settings.json"
 DATABASE_PATH = INSTANCE_PATH / DATABASE_NAME
 DEFAULT_SCHEDULE_START_TIME = "08:00"
 DEFAULT_SCHEDULE_SLOT_MINUTES = 20
-DEFAULT_SCHEDULE_STAND_COUNT = 4
+DEFAULT_SCHEDULE_STAND_COUNT = 6
 DEFAULT_SCHEDULE_END_TIME = ""
 DEFAULT_SCHEDULE_ROUNDS = 2
 SUMMARY_EDITION_LIMIT = 4
@@ -78,10 +81,10 @@ DEFAULT_COLUMNS: list[dict[str, object]] = [
     {"name": "name", "label": "Imię", "editable": True},
     {"name": "lastname", "label": "Nazwisko", "editable": True},
     {"name": "category", "label": "Klasa", "editable": True},
-    {"name": "parcour1", "label": "Parkur 1", "editable": True},
-    {"name": "parcour2", "label": "Parkur 2", "editable": True},
-    {"name": "parcour3", "label": "Parkur 3", "editable": True},
-    {"name": "parcour4", "label": "Parkur 4", "editable": True},
+    *[
+        {"name": f"parcour{idx}", "label": f"Oś {idx}", "editable": True}
+        for idx in range(1, PARCOUR_COUNT + 1)
+    ],
     {"name": "result", "label": "Wynik", "editable": False},
 ]
 DEFAULT_SETTINGS = {
@@ -120,7 +123,7 @@ def _normalize_schedule_rows(
     normalized: list[dict[str, object]] = []
     if not isinstance(rows, list):
         return normalized
-    stand_count = max(4, stand_count)
+    stand_count = max(DEFAULT_SCHEDULE_STAND_COUNT, stand_count)
     for entry in rows:
         if not isinstance(entry, dict):
             continue
@@ -157,7 +160,7 @@ def _normalize_schedule_headers(headers: Sequence[str] | None, stand_count: int)
     for idx in range(stand_count):
         label = header_values[idx] if idx < len(header_values) else ""
         cleaned = str(label or "").strip()
-        normalized.append(cleaned or f"Parkur {idx + 1}")
+        normalized.append(cleaned or f"Oś {idx + 1}")
     return normalized
 
 
@@ -177,6 +180,58 @@ def _build_schedule_headers(columns: Sequence[dict[str, object]], stand_count: i
         headers.append(label_by_name.get(field_name, ""))
     return _normalize_schedule_headers(headers, stand_count)
 
+
+def _merge_columns_with_defaults(columns: list[dict[str, object]]) -> list[dict[str, object]]:
+    default_names = [column["name"] for column in DEFAULT_COLUMNS]
+    default_lookup = {column["name"]: column for column in DEFAULT_COLUMNS}
+    normalized_lookup = {column["name"]: column for column in columns}
+    merged: list[dict[str, object]] = []
+    for name in default_names:
+        column = normalized_lookup.get(name, default_lookup[name])
+        merged.append(
+            {
+                "name": column["name"],
+                "label": column["label"],
+                "editable": bool(column.get("editable")),
+            }
+        )
+    for column in columns:
+        name = column["name"]
+        if name in default_lookup:
+            continue
+        merged.append(
+            {
+                "name": name,
+                "label": column["label"],
+                "editable": bool(column.get("editable")),
+            }
+        )
+    return merged
+
+
+def _normalize_parcour_labels(columns: list[dict[str, object]]) -> bool:
+    updated = False
+    for column in columns:
+        name = column.get("name")
+        if name not in PARCOUR_INDEX:
+            continue
+        idx = PARCOUR_INDEX[name]
+        label = str(column.get("label") or "")
+        if label in {f"Parkur {idx}", f"Os {idx}"}:
+            column["label"] = f"Oś {idx}"
+            updated = True
+    return updated
+
+
+def _axis_range_label(labels: Sequence[str]) -> str:
+    if not labels:
+        return "Osie"
+    start_match = re.search(r"(\d+)", labels[0])
+    end_match = re.search(r"(\d+)", labels[-1])
+    if not start_match or not end_match:
+        return f"{labels[0]}-{labels[-1]}"
+    return f"Osie {int(start_match.group(1))}-{int(end_match.group(1))}"
+
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DATABASE_NAME}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -184,7 +239,8 @@ db = SQLAlchemy(app)
 
 def load_app_settings() -> dict[str, object]:
     settings: dict[str, object] = deepcopy(DEFAULT_SETTINGS)
-    if SETTINGS_PATH.exists():
+    settings_path_exists = SETTINGS_PATH.exists()
+    if settings_path_exists:
         try:
             with SETTINGS_PATH.open(encoding="utf-8") as handle:
                 raw_settings = json.load(handle)
@@ -212,7 +268,13 @@ def load_app_settings() -> dict[str, object]:
                         {"name": name, "label": label, "editable": editable}
                     )
                 if normalized_columns:
-                    settings["columns"] = normalized_columns
+                    merged_columns = _merge_columns_with_defaults(normalized_columns)
+                    settings["columns"] = merged_columns
+                    settings_dirty = merged_columns != normalized_columns
+                    if _normalize_parcour_labels(merged_columns):
+                        settings_dirty = True
+                    if settings_path_exists and settings_dirty:
+                        save_app_settings(settings)
 
             competitor_count_value = raw_settings.get("competitor_count")
             try:
@@ -239,7 +301,7 @@ def load_app_settings() -> dict[str, object]:
             schedule_stand_count = _safe_int(
                 raw_settings.get("schedule_stand_count"), DEFAULT_SCHEDULE_STAND_COUNT
             )
-            settings["schedule_stand_count"] = max(4, schedule_stand_count)
+            settings["schedule_stand_count"] = max(DEFAULT_SCHEDULE_STAND_COUNT, schedule_stand_count)
 
             settings["schedule_end_time"] = _clean_optional_time(
                 raw_settings.get("schedule_end_time")
@@ -481,6 +543,26 @@ def _get_pdf_styles() -> dict[str, ParagraphStyle]:
 def _paragraph(text: str, style: ParagraphStyle) -> Paragraph:
     content = html.escape(text) if text else "&nbsp;"
     return Paragraph(content or "&nbsp;", style)
+
+
+def _paragraph_with_linebreaks(text: str, style: ParagraphStyle) -> Paragraph:
+    content = html.escape(text) if text else "&nbsp;"
+    content = content.replace("\n", "<br/>")
+    return Paragraph(content or "&nbsp;", style)
+
+
+def _wrap_pdf_text(value: str, limit: int = 10) -> str:
+    if not value:
+        return ""
+    if len(value) <= limit:
+        return value
+    wrapped = textwrap.wrap(
+        value,
+        width=limit,
+        break_long_words=True,
+        break_on_hyphens=False,
+    )
+    return "\n".join(wrapped)
 FIRST_NAMES = [
     "Alex", "Jordan", "Taylor", "Morgan", "Casey", "Riley", "Cameron", "Avery",
     "Quinn", "Harper", "Jamie", "Reese", "Logan", "Rowan", "Peyton", "Dakota",
@@ -505,6 +587,14 @@ class Competitor(db.Model):
     parcour2 = db.Column(db.Integer, default=0)
     parcour3 = db.Column(db.Integer, default=0)
     parcour4 = db.Column(db.Integer, default=0)
+    parcour5 = db.Column(db.Integer, default=0)
+    parcour6 = db.Column(db.Integer, default=0)
+    parcour7 = db.Column(db.Integer, default=0)
+    parcour8 = db.Column(db.Integer, default=0)
+    parcour9 = db.Column(db.Integer, default=0)
+    parcour10 = db.Column(db.Integer, default=0)
+    parcour11 = db.Column(db.Integer, default=0)
+    parcour12 = db.Column(db.Integer, default=0)
 
     @property
     def result(self):
@@ -663,6 +753,17 @@ def ensure_database_ready() -> None:
         inspector = inspect(db.engine)
         if "competitor" not in inspector.get_table_names():
             db.create_all()
+            return
+        existing_columns = {column["name"] for column in inspector.get_columns("competitor")}
+        missing_columns = [field for field in PARCOUR_FIELDS if field not in existing_columns]
+        if missing_columns:
+            with db.engine.begin() as connection:
+                for field in missing_columns:
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE competitor ADD COLUMN {field} INTEGER DEFAULT 0"
+                        )
+                    )
     except Exception:
         db.create_all()
 
@@ -718,6 +819,9 @@ def restore_competitors_from_snapshot(snapshot: dict[str, object]) -> tuple[int,
             except (TypeError, ValueError):
                 competitor_id = None
 
+            parcour_values = {
+                field: clamp_score(record.get(field)) for field in PARCOUR_FIELDS
+            }
             competitors_to_insert.append(
                 Competitor(
                     id=competitor_id,
@@ -726,10 +830,7 @@ def restore_competitors_from_snapshot(snapshot: dict[str, object]) -> tuple[int,
                     name=str(record.get("name") or ""),
                     lastname=str(record.get("lastname") or ""),
                     category=str(record.get("category") or ""),
-                    parcour1=clamp_score(record.get("parcour1")),
-                    parcour2=clamp_score(record.get("parcour2")),
-                    parcour3=clamp_score(record.get("parcour3")),
-                    parcour4=clamp_score(record.get("parcour4")),
+                    **parcour_values,
                 )
             )
 
@@ -761,6 +862,10 @@ def populate_competitors_with_examples() -> int:
         new_competitors = []
         for idx in range(competitor_limit):
             squad_number = idx // SQUAD_SIZE + 1
+            parcour_values = {
+                field: random.randint(0, MAX_PARCOUR_SCORE)
+                for field in PARCOUR_FIELDS
+            }
             new_competitors.append(
                 Competitor(
                     number=idx + 1,
@@ -768,10 +873,7 @@ def populate_competitors_with_examples() -> int:
                     name=random.choice(FIRST_NAMES),
                     lastname=random.choice(LAST_NAMES),
                     category=random.choice(CATEGORY_CHOICES),
-                    parcour1=random.randint(0, MAX_PARCOUR_SCORE),
-                    parcour2=random.randint(0, MAX_PARCOUR_SCORE),
-                    parcour3=random.randint(0, MAX_PARCOUR_SCORE),
-                    parcour4=random.randint(0, MAX_PARCOUR_SCORE),
+                    **parcour_values,
                 )
             )
         if new_competitors:
@@ -804,6 +906,7 @@ def create_placeholder_competitors(count: int) -> int:
     placeholder_competitors: list[Competitor] = []
     for idx in range(target_count):
         squad_number = idx // SQUAD_SIZE + 1
+        parcour_values = {field: 0 for field in PARCOUR_FIELDS}
         placeholder_competitors.append(
             Competitor(
                 number=idx + 1,
@@ -811,10 +914,7 @@ def create_placeholder_competitors(count: int) -> int:
                 name="",
                 lastname="",
                 category="",
-                parcour1=0,
-                parcour2=0,
-                parcour3=0,
-                parcour4=0,
+                **parcour_values,
             )
         )
 
@@ -1058,23 +1158,25 @@ def build_metrics_data(competitors: list[Competitor]) -> dict[int, list[dict[str
     squads = group_competitors_by_squad(competitors)
     metrics: dict[int, list[dict[str, object]]] = {}
     empty_markers_template = [["" for _ in range(SHOTS_PER_SERIES)] for _ in range(SERIES_COUNT)]
+    axis_labels = [
+        label or f"Oś {idx + 1}" for idx, label in enumerate(PARCOUR_LABELS)
+    ]
 
     for squad_number in sorted(squads):
-        members = squads[squad_number]
+        members = sorted(squads[squad_number], key=lambda competitor: competitor.number or 0)
         row_count = max(SQUAD_SIZE, len(members))
         squad_metrics: list[dict[str, object]] = []
+        axis_groups = [
+            axis_labels[:SERIES_COUNT],
+            axis_labels[SERIES_COUNT:SERIES_COUNT * 2],
+        ]
 
-        for field_index, (field, label) in enumerate(zip(PARCOUR_FIELDS, PARCOUR_LABELS)):
+        for group_index, group_labels in enumerate(axis_groups):
             entries: list[dict[str, object]] = []
-
             member_count = len(members)
-            if member_count:
-                shift = field_index % member_count
-            else:
-                shift = 0
 
             for idx in range(member_count):
-                competitor = members[(idx - shift) % member_count]
+                competitor = members[idx]
                 target_series_index = max(
                     0, min(SERIES_COUNT - 1, row_count - idx - 1)
                 )
@@ -1101,9 +1203,12 @@ def build_metrics_data(competitors: list[Competitor]) -> dict[int, list[dict[str
                     }
                 )
 
+            range_label = _axis_range_label(group_labels)
+
             squad_metrics.append(
                 {
-                    "label": label,
+                    "label": range_label,
+                    "axis_labels": group_labels,
                     "competitors": entries,
                 }
             )
@@ -1134,11 +1239,11 @@ def build_results_pdf_bytes(competitors: list[Competitor], sort: str, order: str
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
-        pagesize=A4,
-        leftMargin=15 * mm,
-        rightMargin=15 * mm,
-        topMargin=18 * mm,
-        bottomMargin=18 * mm,
+        pagesize=landscape(A4),
+        leftMargin=12 * mm,
+        rightMargin=12 * mm,
+        topMargin=15 * mm,
+        bottomMargin=15 * mm,
     )
     styles = _get_pdf_styles()
     regular_font, bold_font = _register_pdf_fonts()
@@ -1167,11 +1272,9 @@ def build_results_pdf_bytes(competitors: list[Competitor], sort: str, order: str
             column_name = column["name"]
             value = getattr(competitor, column_name)
             text_value = _clean_cell_value(value)
-            if column_name in {"name", "lastname", "category"}:
-                style = styles["table_cell_left"]
-            else:
-                style = styles["table_cell_center"]
-            row_cells.append(_paragraph(text_value, style))
+            text_value = _wrap_pdf_text(text_value, 10)
+            style = styles["table_cell_center"]
+            row_cells.append(_paragraph_with_linebreaks(text_value, style))
         rank_value = rank_map.get(competitor.id)
         rank_display = str(rank_value) if rank_value in (1, 2, 3) else ""
         row_cells.append(_paragraph(rank_display, styles["table_cell_center"]))
@@ -1181,9 +1284,9 @@ def build_results_pdf_bytes(competitors: list[Competitor], sort: str, order: str
     for column in COLUMNS:
         name = column["name"]
         if name == "squad":
-            column_widths.append(13 * mm)
+            column_widths.append(18 * mm)
         elif name == "number":
-            column_widths.append(16 * mm)
+            column_widths.append(20 * mm)
         elif name == "name":
             column_widths.append(24 * mm)
         elif name == "lastname":
@@ -1224,7 +1327,7 @@ def build_results_pdf_bytes(competitors: list[Competitor], sort: str, order: str
 
     for idx, column in enumerate(COLUMNS):
         if column["name"] in {"name", "lastname", "category"}:
-            table_style.add("ALIGN", (idx, 1), (idx, -1), "LEFT")
+            table_style.add("ALIGN", (idx, 1), (idx, -1), "CENTER")
 
     table.setStyle(table_style)
     elements.append(table)
@@ -1248,7 +1351,7 @@ def build_metrics_pdf_bytes(metrics: dict[int, list[dict[str, object]]]) -> byte
         bottomMargin=15 * mm,
     )
 
-    total_shots = SERIES_COUNT * SHOTS_PER_SERIES
+    total_axis_columns = SERIES_COUNT * (SHOTS_PER_SERIES + 2)
     elements: list[object] = []
     first_section = True
 
@@ -1272,11 +1375,13 @@ def build_metrics_pdf_bytes(metrics: dict[int, list[dict[str, object]]]) -> byte
                 _paragraph("Wyniki strzelań", styles["table_header"]),
             ]
             header_row_top.extend(
-                [_paragraph("", styles["table_header"]) for _ in range(total_shots - 1)]
+                [_paragraph("", styles["table_header"]) for _ in range(total_axis_columns - 1)]
             )
-            header_row_top.append(_paragraph("Wynik", styles["table_header"]))
-            header_row_top.append(_paragraph("Podpis", styles["table_header"]))
             table_data.append(header_row_top)
+
+            axis_labels = parcour.get("axis_labels")
+            if not isinstance(axis_labels, list) or len(axis_labels) < SERIES_COUNT:
+                axis_labels = [f"Seria {series_index + 1}" for series_index in range(SERIES_COUNT)]
 
             header_row_second: list[object] = [
                 _paragraph("", styles["table_header"]),
@@ -1284,13 +1389,13 @@ def build_metrics_pdf_bytes(metrics: dict[int, list[dict[str, object]]]) -> byte
             ]
             for series_index in range(SERIES_COUNT):
                 header_row_second.append(
-                    _paragraph(f"Seria {series_index + 1}", styles["table_header"])
+                    _paragraph(str(axis_labels[series_index]), styles["table_header"])
                 )
                 header_row_second.extend(
                     [_paragraph("", styles["table_header"]) for _ in range(SHOTS_PER_SERIES - 1)]
                 )
-            header_row_second.append(_paragraph("", styles["table_header"]))
-            header_row_second.append(_paragraph("", styles["table_header"]))
+                header_row_second.append(_paragraph("W", styles["table_header"]))
+                header_row_second.append(_paragraph("P", styles["table_header"]))
             table_data.append(header_row_second)
 
             for entry in parcour.get("competitors", []):
@@ -1306,33 +1411,25 @@ def build_metrics_pdf_bytes(metrics: dict[int, list[dict[str, object]]]) -> byte
                     _paragraph("", styles["small_center"]),
                 ]
 
-                shot_counter = 0
-                markers_payload = entry.get("markers") or []
-                for series_markers in markers_payload:
-                    for marker_value in series_markers:
-                        marker_text = _clean_cell_value(marker_value).strip().upper()
-                        if marker_text != "X" and shot_counter < MAX_PARCOUR_SCORE:
-                            shot_counter += 1
-                            numbers_row.append(_paragraph(str(shot_counter), styles["small_center"]))
-                        else:
-                            numbers_row.append(_paragraph("", styles["small_center"]))
-                        markers_row.append(_paragraph(marker_text, styles["small_center"]))
-
-                while len(numbers_row) < 2 + total_shots:
+                for _ in range(SERIES_COUNT):
+                    for _ in range(SHOTS_PER_SERIES):
+                        numbers_row.append(_paragraph("", styles["small_center"]))
+                        markers_row.append(_paragraph("", styles["small_center"]))
                     numbers_row.append(_paragraph("", styles["small_center"]))
-                while len(markers_row) < 2 + total_shots:
+                    numbers_row.append(_paragraph("", styles["small_center"]))
+                    markers_row.append(_paragraph("", styles["small_center"]))
                     markers_row.append(_paragraph("", styles["small_center"]))
 
-                numbers_row.append(_paragraph("", styles["small_center"]))
-                numbers_row.append(_paragraph("", styles["small_center"]))
-                markers_row.append(_paragraph("", styles["small_center"]))
-                markers_row.append(_paragraph("", styles["small_center"]))
+                while len(numbers_row) < 2 + total_axis_columns:
+                    numbers_row.append(_paragraph("", styles["small_center"]))
+                while len(markers_row) < 2 + total_axis_columns:
+                    markers_row.append(_paragraph("", styles["small_center"]))
 
                 table_data.append(numbers_row)
                 table_data.append(markers_row)
 
             signature_row = [_paragraph("Podpis sędziów:", styles["table_cell_left"])]
-            total_columns = 2 + total_shots + 2
+            total_columns = 2 + total_axis_columns
             signature_row.extend(
                 [_paragraph("", styles["table_cell_left"]) for _ in range(total_columns - 1)]
             )
@@ -1340,13 +1437,12 @@ def build_metrics_pdf_bytes(metrics: dict[int, list[dict[str, object]]]) -> byte
 
             number_width = 20 * mm
             name_width = 48 * mm
-            result_width = 20 * mm
-            signature_width = 30 * mm
+            result_width = 8 * mm
+            signature_width = 12 * mm
             shot_width = 5.5 * mm
             column_widths = (
                 [number_width, name_width]
-                + [shot_width] * total_shots
-                + [result_width, signature_width]
+                + ([shot_width] * SHOTS_PER_SERIES + [result_width, signature_width]) * SERIES_COUNT
             )
 
             total_width = sum(column_widths)
@@ -1376,22 +1472,21 @@ def build_metrics_pdf_bytes(metrics: dict[int, list[dict[str, object]]]) -> byte
                 ]
             )
 
-            total_columns = len(table_data[0])
             shot_start = 2
-            shot_end = shot_start + total_shots - 1
+            shot_end = shot_start + total_axis_columns - 1
             table_style.add("SPAN", (0, 0), (0, 1))
             table_style.add("SPAN", (1, 0), (1, 1))
             table_style.add("SPAN", (shot_start, 0), (shot_end, 0))
-            table_style.add("SPAN", (shot_end + 1, 0), (shot_end + 1, 1))
-            table_style.add("SPAN", (shot_end + 2, 0), (shot_end + 2, 1))
 
             for series_index in range(SERIES_COUNT):
-                start_col = shot_start + series_index * SHOTS_PER_SERIES
+                start_col = shot_start + series_index * (SHOTS_PER_SERIES + 2)
                 end_col = start_col + SHOTS_PER_SERIES - 1
+                group_end = start_col + SHOTS_PER_SERIES + 1
                 table_style.add("SPAN", (start_col, 1), (end_col, 1))
                 if series_index > 0:
                     table_style.add("LINEBEFORE", (start_col, 0), (start_col, -2), 0.5, rl_colors.black)
-                table_style.add("LINEAFTER", (end_col, 0), (end_col, -2), 0.5, rl_colors.black)
+                if series_index < SERIES_COUNT - 1:
+                    table_style.add("LINEAFTER", (group_end, 0), (group_end, -2), 0.5, rl_colors.black)
                 table_style.add("LEFTPADDING", (start_col, 2), (end_col, -2), 1)
                 table_style.add("RIGHTPADDING", (start_col, 2), (end_col, -2), 1)
 
@@ -1400,15 +1495,25 @@ def build_metrics_pdf_bytes(metrics: dict[int, list[dict[str, object]]]) -> byte
                 base_row = 2 + competitor_index * 2
                 table_style.add("SPAN", (0, base_row), (0, base_row + 1))
                 table_style.add("SPAN", (1, base_row), (1, base_row + 1))
-                table_style.add("SPAN", (shot_end + 1, base_row), (shot_end + 1, base_row + 1))
-                table_style.add("SPAN", (shot_end + 2, base_row), (shot_end + 2, base_row + 1))
+                for series_index in range(SERIES_COUNT):
+                    start_col = shot_start + series_index * (SHOTS_PER_SERIES + 2)
+                    result_col = start_col + SHOTS_PER_SERIES
+                    signature_col = start_col + SHOTS_PER_SERIES + 1
+                    table_style.add("SPAN", (result_col, base_row), (result_col, base_row + 1))
+                    table_style.add("SPAN", (signature_col, base_row), (signature_col, base_row + 1))
+                if competitor_index < competitor_count - 1:
+                    table_style.add(
+                        "LINEBELOW",
+                        (0, base_row + 1),
+                        (-1, base_row + 1),
+                        0.75,
+                        rl_colors.black,
+                    )
 
             last_row_index = len(table_data) - 1
             table_style.add("SPAN", (0, last_row_index), (-1, last_row_index))
             table_style.add("ALIGN", (0, last_row_index), (-1, last_row_index), "LEFT")
             table_style.add("FONTNAME", (0, last_row_index), (-1, last_row_index), bold_font)
-            table_style.add("LEFTPADDING", (shot_end + 1, 2), (shot_end + 2, -2), 1.5)
-            table_style.add("RIGHTPADDING", (shot_end + 1, 2), (shot_end + 2, -2), 1.5)
             table_style.add("ALIGN", (1, 2), (1, -2), "LEFT")
             table_style.add(
                 "BACKGROUND",
@@ -1576,7 +1681,7 @@ def _build_schedule_rows(
                 end_dt = None
 
     slot_delta = timedelta(minutes=max(1, slot_minutes))
-    stand_count = max(4, stand_count)
+    stand_count = max(DEFAULT_SCHEDULE_STAND_COUNT, stand_count)
     rounds = max(1, rounds)
 
     rows: list[dict[str, object]] = []
@@ -1767,6 +1872,7 @@ def index():
         schedule_slot_minutes=settings.get("schedule_slot_minutes", DEFAULT_SCHEDULE_SLOT_MINUTES),
         schedule_stand_count=settings.get("schedule_stand_count", DEFAULT_SCHEDULE_STAND_COUNT),
         schedule_end_time=settings.get("schedule_end_time", DEFAULT_SCHEDULE_END_TIME),
+        max_score=MAX_PARCOUR_SCORE,
         getattr=getattr,
     )
 
@@ -1870,6 +1976,7 @@ def add_squad():
     max_squad = db.session.query(func.max(Competitor.squad)).scalar() or 0
     next_squad = max(1, int(max_squad) + 1)
 
+    parcour_values = {field: 0 for field in PARCOUR_FIELDS}
     new_competitors = [
         Competitor(
             number=max_number + idx + 1,
@@ -1877,10 +1984,7 @@ def add_squad():
             name="",
             lastname="",
             category="",
-            parcour1=0,
-            parcour2=0,
-            parcour3=0,
-            parcour4=0,
+            **parcour_values,
         )
         for idx in range(SQUAD_SIZE)
     ]
@@ -2157,7 +2261,7 @@ def update_schedule_settings():
     )
     settings["schedule_start_time"] = start_time
     settings["schedule_slot_minutes"] = max(1, slot_minutes)
-    settings["schedule_stand_count"] = max(4, stand_count)
+    settings["schedule_stand_count"] = max(DEFAULT_SCHEDULE_STAND_COUNT, stand_count)
     settings["schedule_end_time"] = _clean_optional_time(payload.get("end_time"))
     settings["schedule_rows"] = _normalize_schedule_rows(
         settings.get("schedule_rows"), settings["schedule_stand_count"]
@@ -2178,7 +2282,10 @@ def update_schedule_rows():
     payload = request.get_json(silent=True) or {}
     settings = load_app_settings()
 
-    stand_count = max(4, _safe_int(settings.get("schedule_stand_count"), DEFAULT_SCHEDULE_STAND_COUNT))
+    stand_count = max(
+        DEFAULT_SCHEDULE_STAND_COUNT,
+        _safe_int(settings.get("schedule_stand_count"), DEFAULT_SCHEDULE_STAND_COUNT),
+    )
     rows_payload = payload.get("rows")
     normalized_rows = _normalize_schedule_rows(rows_payload, stand_count)
     settings["schedule_rows"] = normalized_rows
@@ -2194,7 +2301,13 @@ def live():
         return redirect(url_for("initial_setup"))
     # sort by result descending
     competitors = fetch_competitors("result", "desc")
-    return render_template("live.html", competitors=competitors, columns=COLUMNS, getattr=getattr)
+    return render_template(
+        "live.html",
+        competitors=competitors,
+        columns=COLUMNS,
+        max_score=MAX_PARCOUR_SCORE,
+        getattr=getattr,
+    )
 
 @app.route("/live-data")
 def live_data():
@@ -2220,7 +2333,10 @@ def schedule_builder_view():
     slot_minutes = _safe_int(
         settings.get("schedule_slot_minutes", DEFAULT_SCHEDULE_SLOT_MINUTES), DEFAULT_SCHEDULE_SLOT_MINUTES
     )
-    stand_count = max(4, _safe_int(settings.get("schedule_stand_count"), DEFAULT_SCHEDULE_STAND_COUNT))
+    stand_count = max(
+        DEFAULT_SCHEDULE_STAND_COUNT,
+        _safe_int(settings.get("schedule_stand_count"), DEFAULT_SCHEDULE_STAND_COUNT),
+    )
     end_time = _clean_optional_time(settings.get("schedule_end_time", DEFAULT_SCHEDULE_END_TIME))
     schedule_headers = _build_schedule_headers(
         settings.get("columns", DEFAULT_COLUMNS), stand_count
@@ -2301,10 +2417,14 @@ def export_schedule_pdf():
                     assignments = []
                 cleaned_rows.append({"time": time_value, "squads": assignments})
         max_assignments = max((len(row.get("squads", [])) for row in cleaned_rows), default=stand_count)
-        effective_stand_count = max(4, stand_count, max_assignments)
-        schedule_headers = _build_schedule_headers(
-            settings.get("columns", DEFAULT_COLUMNS), effective_stand_count
-        )
+        effective_stand_count = max(DEFAULT_SCHEDULE_STAND_COUNT, stand_count, max_assignments)
+        payload_headers = payload.get("headers")
+        if isinstance(payload_headers, list):
+            schedule_headers = _normalize_schedule_headers(payload_headers, effective_stand_count)
+        else:
+            schedule_headers = _build_schedule_headers(
+                settings.get("columns", DEFAULT_COLUMNS), effective_stand_count
+            )
         safe_title = _sanitize_pdf_text(payload.get("title"), "Harmonogram")
         pdf = build_schedule_pdf_bytes(
             [],
@@ -2332,7 +2452,7 @@ def export_schedule_pdf():
 
         squad_rows = Competitor.query.with_entities(Competitor.squad).distinct().all()
         squads = sorted({row[0] for row in squad_rows})
-        effective_stand_count = max(4, stand_count)
+        effective_stand_count = max(DEFAULT_SCHEDULE_STAND_COUNT, stand_count)
         schedule_headers = _build_schedule_headers(
             settings.get("columns", DEFAULT_COLUMNS), effective_stand_count
         )
