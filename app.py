@@ -1655,6 +1655,85 @@ def build_start_list_pdf_bytes(competitors: list["Competitor"], competition_name
     doc.build(elements)
     return buffer.getvalue()
 
+def build_start_list_signatures_pdf_bytes(competitors: list["Competitor"], competition_name: str) -> bytes:
+    _ensure_pdf_backend()
+    styles = _get_pdf_styles()
+    regular_font, bold_font = _register_pdf_fonts()
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=15 * mm,
+        rightMargin=15 * mm,
+        topMargin=18 * mm,
+        bottomMargin=18 * mm,
+    )
+
+    sorted_competitors = sorted(
+        competitors, key=lambda competitor: (competitor.squad, competitor.number)
+    )
+    elements: list[object] = []
+    title_text = "Lista startowa z podpisami"
+    elements.append(Paragraph(title_text, styles["title"]))
+    elements.append(Spacer(1, 6))
+
+    if not sorted_competitors:
+        elements.append(Paragraph("Brak zawodników do wyświetlenia.", styles["table_cell_left"]))
+        doc.build(elements)
+        return buffer.getvalue()
+
+    header_row = [
+        _paragraph("Grupa", styles["table_header"]),
+        _paragraph("Numer", styles["table_header"]),
+        _paragraph("Imię", styles["table_header"]),
+        _paragraph("Nazwisko", styles["table_header"]),
+        _paragraph("Klasa", styles["table_header"]),
+        _paragraph("Podpis", styles["table_header"]),
+    ]
+    table_data: list[list[object]] = [header_row]
+
+    for competitor in sorted_competitors:
+        table_data.append(
+            [
+                _paragraph(_clean_cell_value(competitor.squad), styles["table_cell_center"]),
+                _paragraph(_clean_cell_value(competitor.number), styles["table_cell_center"]),
+                _paragraph(_clean_cell_value(competitor.name), styles["table_cell_left"]),
+                _paragraph(_clean_cell_value(competitor.lastname), styles["table_cell_left"]),
+                _paragraph(_clean_cell_value(competitor.category), styles["table_cell_center"]),
+                _paragraph("", styles["table_cell_left"]),
+            ]
+        )
+
+    base_widths = [16 * mm, 18 * mm, 36 * mm, 36 * mm, 18 * mm]
+    signature_width = max(30 * mm, doc.width - sum(base_widths))
+    column_widths = base_widths + [signature_width]
+
+    table = Table(table_data, colWidths=column_widths, repeatRows=1)
+    table_style = TableStyle(
+        [
+            ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#f0f0f0")),
+            ("FONTNAME", (0, 0), (-1, 0), bold_font),
+            ("FONTNAME", (0, 1), (-1, -1), regular_font),
+            ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("GRID", (0, 0), (-1, -1), 0.25, rl_colors.lightgrey),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("ALIGN", (0, 1), (1, -1), "CENTER"),
+            ("ALIGN", (2, 1), (3, -1), "LEFT"),
+            ("ALIGN", (4, 1), (4, -1), "CENTER"),
+            ("ALIGN", (5, 1), (5, -1), "LEFT"),
+        ]
+    )
+    table.setStyle(table_style)
+    elements.append(table)
+
+    doc.build(elements)
+    return buffer.getvalue()
+
 def _build_schedule_rows(
     squads: list[int],
     start_time: str,
@@ -2379,6 +2458,22 @@ def export_start_list_pdf():
     response = make_response(pdf)
     response.headers["Content-Type"] = "application/pdf"
     response.headers["Content-Disposition"] = "attachment; filename=lista_startowa.pdf"
+    return response
+
+@app.route("/start-list-signatures-pdf")
+def export_start_list_signatures_pdf():
+    ensure_database_ready()
+    if Competitor.query.count() == 0:
+        return redirect(url_for("initial_setup"))
+
+    settings = load_app_settings()
+    competition_name = settings.get("page_title", DEFAULT_SETTINGS["page_title"])
+    competitors = Competitor.query.order_by(Competitor.squad, Competitor.number).all()
+    pdf = build_start_list_signatures_pdf_bytes(competitors, competition_name)
+
+    response = make_response(pdf)
+    response.headers["Content-Type"] = "application/pdf"
+    response.headers["Content-Disposition"] = "attachment; filename=lista_startowa_z_podpisami.pdf"
     return response
 
 @app.route("/schedule-pdf", methods=["GET", "POST"])

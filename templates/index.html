@@ -16,20 +16,30 @@
     <a href="{{ url_for('export_pdf', sort=sort, order=order) }}" class="btn btn-outline-purple">Export tabeli (PDF)</a>
     <a href="/metrics-pdf" class="btn btn-outline-purple">Generacja metryk (PDF)</a>
     <button type="button" class="btn btn-outline-purple" id="start-list-pdf-button">
-        Lista startowa (PDF)
+        Lista grup (PDF)
+    </button>
+    <button type="button" class="btn btn-outline-purple" id="start-list-signatures-pdf-button">
+        Lista startowa z podpisami (PDF)
     </button>
     <a href="{{ url_for('summary_view') }}" class="btn btn-outline-blue" target="_blank" rel="noopener">Podsumowanie</a>
     <a href="{{ url_for('schedule_builder_view') }}" target="_blank" class="btn btn-outline-blue">
         Harmonogram
     </a>
-    <button type="button" class="btn btn-danger ms-2" id="clear-table-button">
-        Wyczyść tabelę
-    </button>
     <div class="flex-grow-1"></div>
+</div>
+<div class="d-flex flex-wrap align-items-center gap-2 mb-4">
     <div class="btn-group" role="group" aria-label="Sortowanie kategorii">
         <a href="{{ url_for('index', sort='category_result', order='asc') }}"
            class="btn btn-outline-orange {% if sort == 'category_result' and order != 'desc' %}active{% endif %}">
             Kategorie A→Z, wynik malejąco
+        </a>
+        <a href="{{ url_for('index', sort='result', order='desc') }}"
+           class="btn btn-outline-orange {% if sort == 'result' and order == 'desc' %}active{% endif %}">
+            Wyniki malejąco
+        </a>
+        <a href="{{ url_for('index', sort='number', order='asc') }}"
+           class="btn btn-outline-orange {% if sort == 'number' and order == 'asc' %}active{% endif %}">
+            Domyślny widok (numery rosnąco)
         </a>
     </div>
 </div>
@@ -62,6 +72,9 @@
         <button type="button" class="btn btn-warning" id="restore-backup-button">
             Przywróć dane
         </button>
+        <button type="button" class="btn btn-danger" id="clear-table-button">
+            Wyczyść tabelę
+        </button>
         <small class="text-muted ms-auto">Operacje kopii zapasowej mogą chwilę potrwać.</small>
         <button type="button" class="btn btn-outline-secondary" id="populate-example-data-button">
             Wypełnij przykładowymi danymi
@@ -77,9 +90,7 @@
 {% for col in columns %}
     {% set th_class = '' %}
     {% if col.name == 'category' or col.name == 'parcour1' %}{% set th_class = 'col-gap-right' %}
-    {% elif col.name == 'parcour12' or col.name == 'result' %}{% set th_class = 'col-gap-left' %}{% endif %}
-    {% if col.name.startswith('parcour') %}{% set th_class = (th_class + ' parcour-col')|trim %}{% endif %}
-    {% if col.name == 'category' %}{% set th_class = (th_class + ' category-col')|trim %}{% endif %}
+    {% elif col.name == 'parcour4' or col.name == 'result' %}{% set th_class = 'col-gap-left' %}{% endif %}
     <th class="{{ th_class }} cursor-pointer">
         <a href="/?sort={{ col.name }}&order={% if sort==col.name and order=='asc' %}desc{% else %}asc{% endif %}" class="text-white text-decoration-none">
             {{ col.label }}
@@ -99,12 +110,10 @@
 {% for col in columns %}
     {% set td_class = '' %}
     {% if col.name == 'category' or col.name == 'parcour1' %}{% set td_class = 'col-gap-right' %}
-    {% elif col.name == 'parcour12' or col.name == 'result' %}{% set td_class = 'col-gap-left' %}{% endif %}
-    {% if col.name in ['parcour1', 'parcour12'] %}{% set td_class = td_class + ' parcour-center' %}{% endif %}
+    {% elif col.name == 'parcour4' or col.name == 'result' %}{% set td_class = 'col-gap-left' %}{% endif %}
+    {% if col.name in ['parcour1', 'parcour4'] %}{% set td_class = td_class + ' parcour-center' %}{% endif %}
     {% if col.name == 'lastname' %}{% set td_class = td_class + ' lastname' %}{% endif %}
-    {% if col.name.startswith('parcour') %}{% set td_class = td_class + ' parcour-col' %}{% endif %}
-    {% if col.name == 'category' %}{% set td_class = td_class + ' category-col' %}{% endif %}
-    {% if col.name.startswith('parcour') and (getattr(z, col.name) or 0)|int == max_score %}{% set td_class = td_class + ' max-score' %}{% endif %}
+    {% if col.name.startswith('parcour') and getattr(z, col.name) == 25 %}{% set td_class = td_class + ' max-score' %}{% endif %}
     {% if col.name == 'category' %}
     {% set allowed_categories = ['A', 'B', 'C', 'Junior', 'Super Junior', 'Lady', 'Senior'] %}
     {% set current_category = getattr(z, col.name) %}
@@ -169,7 +178,7 @@
                     cell.textContent = res['{{ c.name }}'];
                 }
 
-                if ('{{ c.name }}'.startsWith('parcour') && Number(res['{{ c.name }}']) === maxScore) {
+                if('{{ c.name }}'.startsWith('parcour') && res['{{ c.name }}'] == 25){
                     cell.classList.add('max-score');
                 } else {
                     cell.classList.remove('max-score');
@@ -252,7 +261,7 @@
                     cell.textContent = res['{{ c.name }}'];
             }
 
-            if ('{{ c.name }}'.startsWith('parcour') && Number(res['{{ c.name }}']) === maxScore) {
+            if('{{ c.name }}'.startsWith('parcour') && res['{{ c.name }}'] == 25){
                 cell.classList.add('max-score');
             } else {
                 cell.classList.remove('max-score');
@@ -280,7 +289,6 @@
 </div>
 
 <script>
-const maxScore = {{ max_score|int }};
 const getGroupClass = (squad) => {
     const g = parseInt(squad) || 1;
     const isEven = g % 2 === 0;
@@ -339,6 +347,13 @@ document.addEventListener("DOMContentLoaded", () => {
     if (startListButton) {
         startListButton.addEventListener("click", () => {
             window.location.href = "/start-list-pdf";
+        });
+    }
+
+    const signatureListButton = document.getElementById("start-list-signatures-pdf-button");
+    if (signatureListButton) {
+        signatureListButton.addEventListener("click", () => {
+            window.location.href = "/start-list-signatures-pdf";
         });
     }
 
