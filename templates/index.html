@@ -537,6 +537,21 @@ document.addEventListener("DOMContentLoaded", () => {
             selection.addRange(range);
         };
 
+        const scheduleCellSelection = (cell) => {
+            if (!cell || !cell.hasAttribute("contenteditable")) {
+                return;
+            }
+            requestAnimationFrame(() => {
+                selectCellContents(cell);
+                requestAnimationFrame(() => {
+                    selectCellContents(cell);
+                });
+            });
+            setTimeout(() => {
+                selectCellContents(cell);
+            }, 0);
+        };
+
         const focusCell = (cell) => {
             if (!cell) {
                 return;
@@ -559,9 +574,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     cell.focus();
                 }
             }
-            requestAnimationFrame(() => {
-                selectCellContents(cell);
-            });
+            scheduleCellSelection(cell);
         };
 
         const getCellCoordinates = (cell) => {
@@ -614,16 +627,16 @@ document.addEventListener("DOMContentLoaded", () => {
             if (!cell || !cell.hasAttribute("contenteditable")) {
                 return;
             }
+            const forceSelect = cell.dataset.forceSelectOnFocus === "true";
+            delete cell.dataset.forceSelectOnFocus;
             const pointerInitiated = cell.dataset.pointerSelecting === "true";
             delete cell.dataset.pointerSelecting;
-            if (pointerInitiated) {
+            if (pointerInitiated && !forceSelect) {
                 cell.dataset.overwriteOnType = "false";
                 return;
             }
             cell.dataset.overwriteOnType = "true";
-            requestAnimationFrame(() => {
-                selectCellContents(cell);
-            });
+            scheduleCellSelection(cell);
         });
 
         resultsTable.addEventListener("focusout", (event) => {
@@ -697,6 +710,8 @@ document.addEventListener("DOMContentLoaded", () => {
             if (targetCell && targetCell.dataset.gridCell !== undefined) {
                 scrollRowIntoView(targetCell.parentElement);
                 focusCell(targetCell);
+                targetCell.dataset.forceSelectOnFocus = "true";
+                scheduleCellSelection(targetCell);
             }
         });
     }
