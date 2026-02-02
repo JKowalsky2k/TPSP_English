@@ -523,6 +523,20 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         };
 
+        const selectCellContents = (cell) => {
+            if (!cell || !cell.hasAttribute("contenteditable")) {
+                return;
+            }
+            const selection = window.getSelection && window.getSelection();
+            if (!selection) {
+                return;
+            }
+            const range = document.createRange();
+            range.selectNodeContents(cell);
+            selection.removeAllRanges();
+            selection.addRange(range);
+        };
+
         const focusCell = (cell) => {
             if (!cell) {
                 return;
@@ -545,16 +559,9 @@ document.addEventListener("DOMContentLoaded", () => {
                     cell.focus();
                 }
             }
-            if (cell.hasAttribute("contenteditable")) {
-                const selection = window.getSelection && window.getSelection();
-                if (!selection) {
-                    return;
-                }
-                const range = document.createRange();
-                range.selectNodeContents(cell);
-                selection.removeAllRanges();
-                selection.addRange(range);
-            }
+            requestAnimationFrame(() => {
+                selectCellContents(cell);
+            });
         };
 
         const getCellCoordinates = (cell) => {
@@ -577,19 +584,25 @@ document.addEventListener("DOMContentLoaded", () => {
             return row.children[colIndex] || null;
         };
 
-        resultsTable.addEventListener("mousedown", (event) => {
+        const markPointerSelecting = (event) => {
             const cell = event.target.closest("td[data-grid-cell][contenteditable]");
             if (cell) {
                 cell.dataset.pointerSelecting = "true";
             }
-        });
+        };
 
-        resultsTable.addEventListener("mouseup", (event) => {
+        const clearPointerSelecting = (event) => {
             const cell = event.target.closest("td[data-grid-cell][contenteditable]");
             if (cell) {
                 delete cell.dataset.pointerSelecting;
             }
-        });
+        };
+
+        resultsTable.addEventListener("pointerdown", markPointerSelecting, true);
+        resultsTable.addEventListener("pointerup", clearPointerSelecting, true);
+        resultsTable.addEventListener("pointercancel", clearPointerSelecting, true);
+        resultsTable.addEventListener("mousedown", markPointerSelecting, true);
+        resultsTable.addEventListener("mouseup", clearPointerSelecting, true);
 
         resultsTable.addEventListener("focusin", (event) => {
             const cell = event.target.closest("td[data-grid-cell]");
@@ -608,14 +621,9 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
             }
             cell.dataset.overwriteOnType = "true";
-            const selection = window.getSelection && window.getSelection();
-            if (!selection) {
-                return;
-            }
-            const range = document.createRange();
-            range.selectNodeContents(cell);
-            selection.removeAllRanges();
-            selection.addRange(range);
+            requestAnimationFrame(() => {
+                selectCellContents(cell);
+            });
         });
 
         resultsTable.addEventListener("focusout", (event) => {
