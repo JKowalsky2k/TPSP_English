@@ -113,7 +113,7 @@
     {% elif col.name == 'parcour4' or col.name == 'result' %}{% set td_class = 'col-gap-left' %}{% endif %}
     {% if col.name in ['parcour1', 'parcour4'] %}{% set td_class = td_class + ' parcour-center' %}{% endif %}
     {% if col.name == 'lastname' %}{% set td_class = td_class + ' lastname' %}{% endif %}
-    {% if col.name.startswith('parcour') and getattr(z, col.name) == 25 %}{% set td_class = td_class + ' max-score' %}{% endif %}
+    {% if col.name.startswith('parcour') and getattr(z, col.name) == max_score %}{% set td_class = td_class + ' max-score' %}{% endif %}
     {% if col.name == 'category' %}
     {% set allowed_categories = ['A', 'B', 'C', 'Junior', 'Super Junior', 'Lady', 'Senior'] %}
     {% set current_category = getattr(z, col.name) %}
@@ -178,7 +178,7 @@
                     cell.textContent = res['{{ c.name }}'];
                 }
 
-                if('{{ c.name }}'.startsWith('parcour') && res['{{ c.name }}'] == 25){
+                if('{{ c.name }}'.startsWith('parcour') && res['{{ c.name }}'] == maxScore){
                     cell.classList.add('max-score');
                 } else {
                     cell.classList.remove('max-score');
@@ -261,11 +261,11 @@
                     cell.textContent = res['{{ c.name }}'];
             }
 
-            if('{{ c.name }}'.startsWith('parcour') && res['{{ c.name }}'] == 25){
-                cell.classList.add('max-score');
-            } else {
-                cell.classList.remove('max-score');
-            }
+                if('{{ c.name }}'.startsWith('parcour') && res['{{ c.name }}'] == maxScore){
+                    cell.classList.add('max-score');
+                } else {
+                    cell.classList.remove('max-score');
+                }
         }
         {% endfor %}
 
@@ -296,6 +296,7 @@ const getGroupClass = (squad) => {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
+    const maxScore = {{ max_score|tojson }};
 
     const backupButton = document.getElementById("create-backup-button");
     if (backupButton) {

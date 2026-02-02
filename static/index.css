@@ -20,7 +20,7 @@
 /* Pogrubienie nazwiska */
 .lastname { font-weight: bold; }
 
-/* Wyniki maksymalne (25 pkt) – nadrzędny selektor, wyższa specyficzność */
+/* Wyniki maksymalne – nadrzędny selektor, wyższa specyficzność */
 td.max-score {
     color: rgb(255, 41, 41);
     font-weight: bold;
