@@ -549,6 +549,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (document.activeElement !== cell) {
                     return;
                 }
+                if (cell.dataset.hasTyped === "true") {
+                    return;
+                }
+                if (cell.dataset.overwriteOnType !== "true") {
+                    return;
+                }
                 selectCellContents(cell);
             });
         };
@@ -571,6 +577,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 range.compareBoundaryPoints(Range.START_TO_START, fullRange) === 0 &&
                 range.compareBoundaryPoints(Range.END_TO_END, fullRange) === 0
             );
+        };
+
+        const markCellTyped = (cell) => {
+            if (!cell || !cell.hasAttribute("contenteditable")) {
+                return;
+            }
+            cell.dataset.hasTyped = "true";
         };
 
         let activeCell = null;
@@ -669,6 +682,7 @@ document.addEventListener("DOMContentLoaded", () => {
             scrollRowIntoView(row);
             if (cell && cell.hasAttribute("contenteditable")) {
                 cell.dataset.initialValue = cell.textContent;
+                cell.dataset.hasTyped = "false";
             }
             if (!cell || !cell.hasAttribute("contenteditable")) {
                 return;
@@ -691,6 +705,7 @@ document.addEventListener("DOMContentLoaded", () => {
             clearActiveCell(cell);
             delete cell.dataset.pointerSelecting;
             delete cell.dataset.overwriteOnType;
+            delete cell.dataset.hasTyped;
         });
 
         resultsTable.addEventListener("keydown", (event) => {
@@ -705,10 +720,21 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (cell.dataset.overwriteOnType === "true" && isPrintableKey) {
                     cell.textContent = "";
                     cell.dataset.overwriteOnType = "false";
+                    markCellTyped(cell);
                 } else if (isPrintableKey || event.key === "Backspace" || event.key === "Delete") {
                     cell.dataset.overwriteOnType = "false";
+                    markCellTyped(cell);
                 }
             }
+        });
+
+        resultsTable.addEventListener("input", (event) => {
+            const cell = event.target.closest("td[data-grid-cell][contenteditable]");
+            if (!cell) {
+                return;
+            }
+            cell.dataset.overwriteOnType = "false";
+            markCellTyped(cell);
         });
 
         resultsTable.addEventListener("keydown", (event) => {
@@ -768,6 +794,9 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
             }
             if (cell.dataset.overwriteOnType !== "true") {
+                return;
+            }
+            if (cell.dataset.hasTyped === "true") {
                 return;
             }
             if (isWholeCellSelection(cell)) {
