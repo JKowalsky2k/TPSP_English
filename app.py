@@ -955,6 +955,30 @@ def _backup_sort_key(payload: dict[str, object]) -> tuple[int, datetime]:
     # Older backups first; unknown timestamps go to the end while keeping stable order
     return (0, timestamp) if timestamp else (1, datetime.max)
 
+def _parse_backup_filename_timestamp(filename: str) -> datetime | None:
+    if not filename:
+        return None
+    match = re.search(r"(\d{8})-(\d{6})", filename)
+    if not match:
+        return None
+    try:
+        return datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S")
+    except Exception:
+        return None
+
+
+def _backup_filename_sort_key(
+    payload: dict[str, object], fallback_index: int
+) -> tuple[int, datetime | int]:
+    if not isinstance(payload, dict):
+        return (1, fallback_index)
+    filename = payload.get("_filename")
+    if isinstance(filename, str):
+        parsed = _parse_backup_filename_timestamp(filename)
+        if parsed:
+            return (0, parsed)
+    return (1, fallback_index)
+
 
 def _normalize_backup_record(record: dict[str, object]) -> dict[str, object]:
     name = str(record.get("name") or "").strip()
@@ -977,18 +1001,28 @@ def _normalize_backup_record(record: dict[str, object]) -> dict[str, object]:
     }
 
 
-def combine_backup_summaries(payloads: list[dict[str, object]], max_editions: int = SUMMARY_EDITION_LIMIT) -> list[dict[str, object]]:
+def combine_backup_summaries(
+    payloads: list[dict[str, object]],
+    max_editions: int = SUMMARY_EDITION_LIMIT,
+) -> list[dict[str, object]]:
     edition_count = max_editions if payloads else 0
     if edition_count <= 0:
         return []
 
-    sorted_payloads = sorted(payloads[:max_editions], key=_backup_sort_key)
+    limited_payloads = list(payloads[:max_editions])
+    ordered_payloads = [
+        payload for _, payload in sorted(
+            enumerate(limited_payloads),
+            key=lambda item: _backup_filename_sort_key(item[1], item[0]),
+        )
+    ]
 
     combined: dict[tuple[str, str], dict[str, object]] = {}
     for idx in range(edition_count):
-        if idx >= len(sorted_payloads):
+        if idx >= len(ordered_payloads):
             continue
-        records = sorted_payloads[idx].get("records") if isinstance(sorted_payloads[idx], dict) else None
+        payload = ordered_payloads[idx]
+        records = payload.get("records") if isinstance(payload, dict) else None
         if not isinstance(records, list):
             continue
         for raw_record in records:
@@ -1007,16 +1041,14 @@ def combine_backup_summaries(payloads: list[dict[str, object]], max_editions: in
                     "category": normalized["category"],
                     "squad": normalized["squad"],
                     "editions": [0] * edition_count,
+                    "last_seen_idx": -1,
                 },
             )
             entry["editions"][idx] = normalized["result"]
-            if normalized["name"]:
-                entry["name"] = normalized["name"]
-            if normalized["lastname"]:
-                entry["lastname"] = normalized["lastname"]
-            if normalized["category"]:
+            if idx >= entry.get("last_seen_idx", -1):
                 entry["category"] = normalized["category"]
-            if normalized["squad"]:
+                entry["last_seen_idx"] = idx
+            if not entry.get("squad"):
                 entry["squad"] = normalized["squad"]
 
     rows = []
@@ -1984,6 +2016,7 @@ def summary_view():
                     errors.append(f"Nie udało się wczytać pliku {uploaded.filename}.")
                     continue
                 if isinstance(data, dict):
+                    data["_filename"] = uploaded.filename
                     payloads.append(data)
             if payloads:
                 summary_rows = combine_backup_summaries(payloads, SUMMARY_EDITION_LIMIT)
